@@ -326,8 +326,65 @@ instance JSON.ToJSON TypeSpecification where
 
 data Entity =
   Entity {
-      entityName :: String
+      entityName :: String,
+      entityTables :: Map TableRole Table
     }
+instance JSON.ToJSON Entity where
+  toJSON entity =
+    JSON.object
+      ["name" .= JSON.toJSON (entityName entity),
+       "tables" .= JSON.toJSON
+         (Map.mapKeys (\role -> case role of
+                                  MainTableRole -> "main" :: String
+                                  VersionTableRole -> "version" :: String)
+                      (entityTables entity))]
+
+
+data Table =
+  Table {
+      tableName :: String
+    }
+instance JSON.ToJSON Table where
+  toJSON table =
+    JSON.object
+      ["name" .= JSON.toJSON (tableName table)]
+
+
+data TableRole
+  = MainTableRole
+  | VersionTableRole
+  deriving (Eq, Ord)
+instance JSON.ToJSON TableRole where
+  toJSON MainTableRole = JSON.toJSON ("main" :: Text)
+  toJSON VersionTableRole = JSON.toJSON ("version" :: Text)
+
+
+data PreColumn =
+  PreColumn {
+      preColumnName :: NameSpecification,
+      preColumnType :: TypeSpecification,
+      preColumnTableRoles :: [TableRole],
+      preColumnRole :: ColumnRole
+    }
+instance JSON.ToJSON PreColumn where
+  toJSON column =
+    JSON.object
+      ["name" .= JSON.toJSON (preColumnName column),
+       "type" .= JSON.toJSON (preColumnType column),
+       "table_roles" .= JSON.toJSON (preColumnTableRoles column),
+       "roles" .= JSON.toJSON (preColumnRole column)]
+
+
+data ColumnRole
+  = KeyColumnRole Int
+  | TimestampColumnRole
+  | DataColumnRole
+  deriving (Eq, Ord)
+instance JSON.ToJSON ColumnRole where
+  toJSON (KeyColumnRole index) =
+    JSON.toJSON [JSON.toJSON ("key" :: Text), JSON.toJSON index]
+  toJSON TimestampColumnRole = JSON.toJSON ("timestamp" :: Text)
+  toJSON DataColumnRole = JSON.toJSON ("data" :: Text)
 
 
 flattenEntitySpecification
@@ -368,18 +425,49 @@ flattenEntitySpecification templates entity =
        }
 
 
+computeEntity
+  :: String
+  -> EntitySpecificationFlattened
+  -> Entity
+computeEntity name flattened =
+  let versioned = entitySpecificationFlattenedVersioned flattened
+      allTableRoles = if versioned
+                        then [MainTableRole, VersionTableRole]
+                        else [MainTableRole]
+      keyColumns =
+        map (\(column, index) -> PreColumn {
+                            preColumnName = columnSpecificationName column,
+                            preColumnType = columnSpecificationType column,
+                            preColumnTableRoles = allTableRoles,
+                            preColumnRole = KeyColumnRole index
+                          })
+            (zip (entitySpecificationFlattenedKey flattened) [0 ..])
+      mainTable = Table {
+                      tableName = name
+                    }
+      versionTable = Table {
+                         tableName = name ++ "_version"
+                       }
+      tables = Map.fromList $ if versioned
+                                then [(MainTableRole, mainTable),
+                                      (VersionTableRole, versionTable)]
+                                else [(MainTableRole, mainTable)]
+  in Entity {
+         entityName = name,
+         entityTables = tables
+       }
+
+
 computeEntities
   :: Map String EntitySpecification
   -> Map String EntitySpecification
   -> Map String Entity
 computeEntities templates entities =
-  traceJSON (Map.map (flattenEntitySpecification templates) entities)
-  $ Map.mapWithKey
+  Map.mapWithKey
     (\name entity ->
        let flattened = flattenEntitySpecification templates entity
-       in Entity {
-              entityName = name
-            })
+           entity' = computeEntity name flattened
+       in entity')
     entities
 
 
@@ -388,7 +476,7 @@ compile schema =
   let entities = computeEntities (schemaEntityTemplates schema)
                                  (schemaEntities schema)
       tables = []
-  in seq entities D.Schema {
+  in traceJSON entities D.Schema {
          D.schemaID = schemaID schema,
          D.schemaVersion = schemaVersion schema,
          D.schemaTables = tables
