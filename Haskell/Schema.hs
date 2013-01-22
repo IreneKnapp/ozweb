@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, ExistentialQuantification #-}
 module Schema
   (Schema(..),
    EntitySpecification(..),
@@ -13,6 +13,7 @@ module Schema
 
 import Data.Aeson ((.:), (.:?), (.!=), (.=))
 import qualified Data.Aeson as JSON
+import qualified Data.Aeson.Types as JSON
 import qualified Data.Map as Map
 import qualified Data.Text as Text
 import qualified Data.UUID as UUID
@@ -297,20 +298,23 @@ instance JSON.ToJSON NameSpecificationPart where
        "name" .= JSON.toJSON name]
 
 
-data TypeSpecification = TypeSpecification String [String]
+data TypeSpecification = TypeSpecification String [TypeSpecification]
 instance JSON.FromJSON TypeSpecification where
   parseJSON (JSON.String text) =
     pure $ TypeSpecification (Text.unpack text) []
   parseJSON items@(JSON.Array _) = do
     items <- JSON.parseJSON items
     case items of
-      (constructor : parameters) ->
+      (constructor : parameters) -> do
+        parameters <- JSON.parseJSON $ JSON.toJSON parameters
         return $ TypeSpecification constructor parameters
       _ -> mzero
   parseJSON _ = mzero
 instance JSON.ToJSON TypeSpecification where
   toJSON (TypeSpecification constructor parameters) =
-    JSON.toJSON (constructor : parameters)
+    let parameters' =
+          fromJust $ JSON.parseMaybe JSON.parseJSON (JSON.toJSON parameters)
+    in JSON.toJSON (constructor : parameters')
 
 
 data Entity =
@@ -344,13 +348,15 @@ instance JSON.ToJSON Table where
 data Column =
   Column {
       columnName :: String,
-      columnType :: TypeSpecification
+      columnType :: TypeSpecification,
+      columnReadOnly :: Bool
     }
 instance JSON.ToJSON Column where
   toJSON column =
     JSON.object
       ["name" .= JSON.toJSON (columnName column),
-       "type" .= JSON.toJSON (columnType column)]
+       "type" .= JSON.toJSON (columnType column),
+       "read_only" .= JSON.toJSON (columnReadOnly column)]
 
 
 data TableRole
@@ -366,6 +372,7 @@ data PreColumn =
   PreColumn {
       preColumnName :: NameSpecification,
       preColumnType :: TypeSpecification,
+      preColumnReadOnly :: Bool,
       preColumnTableRoles :: [TableRole],
       preColumnRole :: ColumnRole
     }
@@ -374,6 +381,7 @@ instance JSON.ToJSON PreColumn where
     JSON.object
       ["name" .= JSON.toJSON (preColumnName column),
        "type" .= JSON.toJSON (preColumnType column),
+       "read_only" .= JSON.toJSON (preColumnReadOnly column),
        "table_roles" .= JSON.toJSON (preColumnTableRoles column),
        "roles" .= JSON.toJSON (preColumnRole column)]
 
@@ -388,6 +396,58 @@ instance JSON.ToJSON ColumnRole where
     JSON.toJSON [JSON.toJSON ("key" :: Text), JSON.toJSON index]
   toJSON TimestampColumnRole = JSON.toJSON ("timestamp" :: Text)
   toJSON DataColumnRole = JSON.toJSON ("data" :: Text)
+
+
+data Subcolumn =
+  Subcolumn {
+      subcolumnName :: NameSpecification,
+      subcolumnType :: D.Type
+    }
+instance JSON.ToJSON Subcolumn where
+  toJSON subcolumn =
+    JSON.object
+      ["name" .= JSON.toJSON (subcolumnName subcolumn),
+       "type" .= JSON.toJSON (show $ D.showTokens $ subcolumnType subcolumn)]
+
+
+class Type type' where
+  typeSubcolumns :: type' -> [Subcolumn]
+
+
+data AnyType = forall type' . Type type' => AnyType type'
+
+
+data UUIDType = UUIDType
+instance Type UUIDType where
+  typeSubcolumns UUIDType =
+    [Subcolumn {
+         subcolumnName =
+           NameSpecification [VariableNameSpecificationPart "column"],
+         subcolumnType =
+           D.Type D.TypeAffinityNone
+                  (D.TypeName $ fromJust $ D.mkOneOrMore
+                    [D.UnqualifiedIdentifier "blob"])
+                  D.NoTypeSize
+       }]
+
+
+data TimestampType = TimestampType
+instance Type TimestampType where
+  typeSubcolumns TimestampType =
+    [Subcolumn {
+         subcolumnName =
+           NameSpecification [VariableNameSpecificationPart "column"],
+         subcolumnType =
+           D.Type D.TypeAffinityNone
+                  (D.TypeName $ fromJust $ D.mkOneOrMore
+                    [D.UnqualifiedIdentifier"integer"])
+                  D.NoTypeSize
+       }]
+
+
+data MaybeType = MaybeType AnyType
+instance Type MaybeType where
+  typeSubcolumns (MaybeType (AnyType subtype)) = typeSubcolumns subtype
 
 
 flattenEntitySpecification
@@ -439,19 +499,37 @@ computeEntity theEntityName flattened =
       allTableRoles = if versioned
                         then [MainTableRole, VersionTableRole]
                         else [MainTableRole]
-      keyColumns =
+      basicKeyColumns =
         map (\(column, index) -> PreColumn {
                             preColumnName = columnSpecificationName column,
                             preColumnType = columnSpecificationType column,
+                            preColumnReadOnly = True,
                             preColumnTableRoles = allTableRoles,
                             preColumnRole = KeyColumnRole index
                           })
             (zip (entitySpecificationFlattenedKey flattened) [0 ..])
+      versionKeyColumn =
+        PreColumn {
+            preColumnName =
+              NameSpecification [LiteralNameSpecificationPart "version_id"],
+            preColumnType = TypeSpecification "uuid" [],
+            preColumnReadOnly = True,
+            preColumnTableRoles = [VersionTableRole],
+            preColumnRole =
+              KeyColumnRole
+                (length $ entitySpecificationFlattenedKey flattened)
+          }
+      keyColumns =
+        concat [basicKeyColumns,
+                if versioned
+                  then [versionKeyColumn]
+                  else []]
       createdAtColumn =
         PreColumn {
             preColumnName =
               NameSpecification [LiteralNameSpecificationPart "created_at"],
             preColumnType = TypeSpecification "timestamp" [],
+            preColumnReadOnly = True,
             preColumnTableRoles = [MainTableRole],
             preColumnRole = TimestampColumnRole
           }
@@ -460,6 +538,7 @@ computeEntity theEntityName flattened =
             preColumnName =
               NameSpecification [LiteralNameSpecificationPart "modified_at"],
             preColumnType = TypeSpecification "timestamp" [],
+            preColumnReadOnly = True,
             preColumnTableRoles =
               if versioned
                 then [VersionTableRole]
@@ -470,7 +549,9 @@ computeEntity theEntityName flattened =
         PreColumn {
             preColumnName =
               NameSpecification [LiteralNameSpecificationPart "deleted_at"],
-            preColumnType = TypeSpecification "maybe" ["timestamp"],
+            preColumnType =
+              TypeSpecification "maybe" [TypeSpecification "timestamp" []],
+            preColumnReadOnly = True,
             preColumnTableRoles = [MainTableRole],
             preColumnRole = TimestampColumnRole
           }
@@ -491,7 +572,8 @@ computeEntity theEntityName flattened =
                            (preColumnName column)
                    in (name, Column {
                                  columnName = name,
-                                 columnType = preColumnType column
+                                 columnType = preColumnType column,
+                                 columnReadOnly = preColumnReadOnly column
                                }))
                 $ sortBy (on compare preColumnRole)
                       $ filter (\column -> elem tableRole
@@ -557,13 +639,50 @@ computeEntities templates entities =
     entities
 
 
-compile :: Schema -> D.Schema
-compile schema =
+computeTable :: Table -> Maybe D.CreateTable
+computeTable table =
+  let columns = concatMap computeColumn $ Map.elems $ tableColumns table
+  in case columns of
+       [] -> Nothing
+       _ -> Just $ D.CreateTable D.NoTemporary
+                    D.NoIfNotExists
+                      (D.SinglyQualifiedIdentifier Nothing $ tableName table)
+                      $ D.ColumnsAndConstraints
+                         (fromJust $ D.mkOneOrMore columns)
+                         []
+
+
+computeColumn :: Column -> [D.ColumnDefinition]
+computeColumn column =
+  map (\subcolumn ->
+         D.ColumnDefinition
+          (D.UnqualifiedIdentifier
+            $ finalizeNameSpecification
+                $ substituteNameSpecification
+                    (Map.fromList [("column", columnName column)])
+                    (subcolumnName subcolumn))
+          (D.JustType $ subcolumnType subcolumn)
+          [])
+      (case computeType $ columnType column of
+         AnyType type' -> typeSubcolumns type')
+
+
+computeType :: TypeSpecification -> AnyType
+computeType (TypeSpecification "timestamp" []) = AnyType TimestampType
+computeType (TypeSpecification "uuid" []) = AnyType UUIDType
+computeType (TypeSpecification "maybe" [subtype]) =
+  AnyType (MaybeType $ computeType subtype)
+
+
+compile :: Schema -> Maybe D.Schema
+compile schema = do
   let entities = computeEntities (schemaEntityTemplates schema)
                                  (schemaEntities schema)
-      tables = []
-  in traceJSON entities D.Schema {
-         D.schemaID = schemaID schema,
-         D.schemaVersion = schemaVersion schema,
-         D.schemaTables = tables
-       }
+  tables <- mapM computeTable
+                 $ concatMap (\entity -> Map.elems $ entityTables entity)
+                             (Map.elems entities)
+  return $ traceJSON entities D.Schema {
+      D.schemaID = schemaID schema,
+      D.schemaVersion = schemaVersion schema,
+      D.schemaTables = tables
+    }
