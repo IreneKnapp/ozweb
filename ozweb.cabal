@@ -26,7 +26,8 @@ Executable ozweb
   main-is: Ozweb.hs
   other-modules: Database,
                  Schema,
-                 Timestamp
+                 Timestamp,
+                 Trace
   hs-source-dirs: Haskell
   build-depends: aeson >= 0.6.0.2 && < 1,
                  base >= 4.1 && < 5,

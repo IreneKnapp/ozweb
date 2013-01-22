@@ -21,6 +21,7 @@ import qualified Timestamp as Timestamp
 
 import Control.Applicative
 import Control.Monad
+import Data.Function
 import Data.List
 import Data.Map (Map)
 import Data.Maybe
@@ -28,19 +29,7 @@ import Data.Monoid
 import Data.Text (Text)
 
 import Debug.Trace
-import qualified Data.Text.Encoding as Text
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Lazy as LBS
-
-
-traceJSON :: (JSON.ToJSON a) => a -> b -> b
-traceJSON subject result =
-  trace (Text.unpack
-          $ Text.decodeUtf8
-          $ BS.concat
-          $ LBS.toChunks
-          $ JSON.encode subject)
-        result
+import Trace
 
 
 instance JSON.FromJSON UUID.UUID where
@@ -342,12 +331,26 @@ instance JSON.ToJSON Entity where
 
 data Table =
   Table {
-      tableName :: String
+      tableName :: String,
+      tableColumns :: Map String Column
     }
 instance JSON.ToJSON Table where
   toJSON table =
     JSON.object
-      ["name" .= JSON.toJSON (tableName table)]
+      ["name" .= JSON.toJSON (tableName table),
+       "columns" .= JSON.toJSON (tableColumns table)]
+
+
+data Column =
+  Column {
+      columnName :: String,
+      columnType :: TypeSpecification
+    }
+instance JSON.ToJSON Column where
+  toJSON column =
+    JSON.object
+      ["name" .= JSON.toJSON (columnName column),
+       "type" .= JSON.toJSON (columnType column)]
 
 
 data TableRole
@@ -393,18 +396,19 @@ flattenEntitySpecification
   -> EntitySpecificationFlattened
 flattenEntitySpecification templates entity =
   let relevantTemplates =
-        unfoldr (\maybeEntity ->
-                   case maybeEntity of
-                     Nothing -> Nothing
-                     Just entity ->
-                       case entitySpecificationTemplate entity of
-                         Nothing -> Just (entity, Nothing)
-                         Just templateName ->
-                           case Map.lookup templateName templates of
+        reverse
+          $ unfoldr (\maybeEntity ->
+                       case maybeEntity of
+                         Nothing -> Nothing
+                         Just entity ->
+                           case entitySpecificationTemplate entity of
                              Nothing -> Just (entity, Nothing)
-                             Just template ->
-                               Just (entity, Just template))
-                (Just entity)
+                             Just templateName ->
+                               case Map.lookup templateName templates of
+                                 Nothing -> Just (entity, Nothing)
+                                 Just template ->
+                                   Just (entity, Just template))
+                    (Just entity)
       flattened = mconcat relevantTemplates
   in EntitySpecificationFlattened {
          entitySpecificationFlattenedExtends =
@@ -429,8 +433,9 @@ computeEntity
   :: String
   -> EntitySpecificationFlattened
   -> Entity
-computeEntity name flattened =
+computeEntity theEntityName flattened =
   let versioned = entitySpecificationFlattenedVersioned flattened
+      timestamped = entitySpecificationFlattenedTimestamped flattened
       allTableRoles = if versioned
                         then [MainTableRole, VersionTableRole]
                         else [MainTableRole]
@@ -442,20 +447,101 @@ computeEntity name flattened =
                             preColumnRole = KeyColumnRole index
                           })
             (zip (entitySpecificationFlattenedKey flattened) [0 ..])
-      mainTable = Table {
-                      tableName = name
-                    }
-      versionTable = Table {
-                         tableName = name ++ "_version"
-                       }
+      createdAtColumn =
+        PreColumn {
+            preColumnName =
+              NameSpecification [LiteralNameSpecificationPart "created_at"],
+            preColumnType = TypeSpecification "timestamp" [],
+            preColumnTableRoles = [MainTableRole],
+            preColumnRole = TimestampColumnRole
+          }
+      modifiedAtColumn =
+        PreColumn {
+            preColumnName =
+              NameSpecification [LiteralNameSpecificationPart "modified_at"],
+            preColumnType = TypeSpecification "timestamp" [],
+            preColumnTableRoles =
+              if versioned
+                then [VersionTableRole]
+                else [MainTableRole],
+            preColumnRole = TimestampColumnRole
+          }
+      deletedAtColumn =
+        PreColumn {
+            preColumnName =
+              NameSpecification [LiteralNameSpecificationPart "deleted_at"],
+            preColumnType = TypeSpecification "maybe" ["timestamp"],
+            preColumnTableRoles = [MainTableRole],
+            preColumnRole = TimestampColumnRole
+          }
+      timestampColumns =
+        if timestamped
+          then [createdAtColumn, modifiedAtColumn, deletedAtColumn]
+          else []
+      dataColumns = []
+      allColumns =
+        concat [keyColumns, timestampColumns, dataColumns]
+      columnsForTableRole :: TableRole -> Map String Column
+      columnsForTableRole tableRole =
+        Map.fromList
+          $ map (\column ->
+                   let name =
+                         finalizeNameSpecification $ substituteNameSpecification
+                           (Map.fromList [("entity", theEntityName)])
+                           (preColumnName column)
+                   in (name, Column {
+                                 columnName = name,
+                                 columnType = preColumnType column
+                               }))
+                $ sortBy (on compare preColumnRole)
+                      $ filter (\column -> elem tableRole
+                                                $ preColumnTableRoles column)
+                               allColumns
+      mainTable =
+        Table {
+            tableName = theEntityName,
+            tableColumns = columnsForTableRole MainTableRole
+          }
+      versionTable =
+        Table {
+            tableName = theEntityName ++ "_version",
+            tableColumns = columnsForTableRole VersionTableRole
+          }
       tables = Map.fromList $ if versioned
                                 then [(MainTableRole, mainTable),
                                       (VersionTableRole, versionTable)]
                                 else [(MainTableRole, mainTable)]
   in Entity {
-         entityName = name,
+         entityName = theEntityName,
          entityTables = tables
        }
+
+
+finalizeNameSpecification
+  :: NameSpecification
+  -> String
+finalizeNameSpecification (NameSpecification parts) =
+  concatMap (\part ->
+               case part of
+                 LiteralNameSpecificationPart literal -> literal
+                 _ -> "")
+            parts
+
+
+substituteNameSpecification
+  :: Map String String
+  -> NameSpecification
+  -> NameSpecification
+substituteNameSpecification bindings (NameSpecification parts) =
+  NameSpecification
+    $ map (\part ->
+             case part of
+               VariableNameSpecificationPart variable ->
+                 case Map.lookup variable bindings of
+                   Nothing -> part
+                   Just value -> LiteralNameSpecificationPart value
+               _ -> part)
+          parts
 
 
 computeEntities
