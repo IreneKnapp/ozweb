@@ -1,4 +1,5 @@
-{-# LANGUAGE OverloadedStrings, ExistentialQuantification #-}
+{-# LANGUAGE OverloadedStrings, ExistentialQuantification,
+             FlexibleInstances #-}
 module Schema
   (Schema(..),
    EntitySpecification(..),
@@ -11,6 +12,8 @@ module Schema
    compile)
   where
 
+import qualified Control.Monad.Error as MTL
+import qualified Control.Monad.Identity as MTL
 import Data.Aeson ((.:), (.:?), (.!=), (.=))
 import qualified Data.Aeson as JSON
 import qualified Data.Aeson.Types as JSON
@@ -450,6 +453,40 @@ instance Type MaybeType where
   typeSubcolumns (MaybeType (AnyType subtype)) = typeSubcolumns subtype
 
 
+data Compilation a = Compilation (MTL.ErrorT String MTL.Identity a)
+instance Monad Compilation where
+  return a = Compilation $ return a
+  a >>= b = Compilation $ do
+    let Compilation a' = a
+    v <- a'
+    let Compilation b' = b v
+    b'
+
+
+throwError :: String -> Compilation a
+throwError message = Compilation $ do
+  MTL.throwError message
+
+
+runCompilation :: Compilation a -> Either String a
+runCompilation (Compilation action) =
+  MTL.runIdentity $ MTL.runErrorT action
+
+
+compile :: Schema -> Either String D.Schema
+compile schema = runCompilation $ do
+  let entities = computeEntities (schemaEntityTemplates schema)
+                                 (schemaEntities schema)
+  tables <- mapM compileTable
+                 $ concatMap (\entity -> Map.elems $ entityTables entity)
+                             (Map.elems entities)
+  return $ traceJSON entities $ D.Schema {
+      D.schemaID = schemaID schema,
+      D.schemaVersion = schemaVersion schema,
+      D.schemaTables = tables
+    }
+
+
 flattenEntitySpecification
   :: Map String EntitySpecification
   -> EntitySpecification
@@ -639,12 +676,13 @@ computeEntities templates entities =
     entities
 
 
-computeTable :: Table -> Maybe D.CreateTable
-computeTable table =
+compileTable :: Table -> Compilation D.CreateTable
+compileTable table =
   let columns = concatMap computeColumn $ Map.elems $ tableColumns table
   in case columns of
-       [] -> Nothing
-       _ -> Just $ D.CreateTable D.NoTemporary
+       [] -> throwError "No columns."
+       _ ->
+         return $ D.CreateTable D.NoTemporary
                     D.NoIfNotExists
                       (D.SinglyQualifiedIdentifier Nothing $ tableName table)
                       $ D.ColumnsAndConstraints
@@ -673,16 +711,3 @@ computeType (TypeSpecification "uuid" []) = AnyType UUIDType
 computeType (TypeSpecification "maybe" [subtype]) =
   AnyType (MaybeType $ computeType subtype)
 
-
-compile :: Schema -> Maybe D.Schema
-compile schema = do
-  let entities = computeEntities (schemaEntityTemplates schema)
-                                 (schemaEntities schema)
-  tables <- mapM computeTable
-                 $ concatMap (\entity -> Map.elems $ entityTables entity)
-                             (Map.elems entities)
-  return $ traceJSON entities D.Schema {
-      D.schemaID = schemaID schema,
-      D.schemaVersion = schemaVersion schema,
-      D.schemaTables = tables
-    }

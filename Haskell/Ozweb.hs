@@ -36,8 +36,9 @@ initialize schemaFilename databaseFilename = do
       putStrLn "Invalid schema."
     Just schema -> do
       case S.compile schema of
-        Nothing -> do
+        Left message -> do
+          putStrLn message
           putStrLn "Unable to compile schema."
-        Just schema -> do
+        Right schema -> do
           let statements = D.createSchema schema
           putStrLn $ show $ D.showTokens statements
