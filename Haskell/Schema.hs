@@ -543,8 +543,9 @@ compileEntity theEntityName flattened = do
           then [createdAtColumn, modifiedAtColumn, deletedAtColumn]
           else []
       dataColumns = []
+      relationColumns = []
       allColumns =
-        concat [keyColumns, timestampColumns, dataColumns]
+        concat [keyColumns, timestampColumns, dataColumns, relationColumns]
       getColumnsForTableRole :: TableRole -> Compilation (Map String Column)
       getColumnsForTableRole tableRole = do
         mapM (\column -> do
