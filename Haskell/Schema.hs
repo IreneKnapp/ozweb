@@ -199,7 +199,7 @@ data HierarchySpecification
         hierarchySpecificationPathColumns :: [String]
       }
 instance JSON.FromJSON HierarchySpecification where
-  parseJSON JSON.Null = pure $ NoHierarchySpecification
+  parseJSON JSON.Null = pure NoHierarchySpecification
   parseJSON (JSON.Object value) =
     HierarchySpecification <$> value .: "path_columns"
   parseJSON _ = mzero
@@ -215,7 +215,7 @@ instance Monoid HierarchySpecification where
     HierarchySpecification {
         hierarchySpecificationPathColumns =
           hierarchySpecificationPathColumns b
-          ++ hierarchySpecificationPathColumns b
+          ++ hierarchySpecificationPathColumns a
       }
   mappend _ b = b
 
@@ -468,6 +468,12 @@ throwError message = Compilation $ do
   MTL.throwError message
 
 
+tagErrors :: String -> Compilation a -> Compilation a
+tagErrors message (Compilation action) = Compilation $ do
+  MTL.catchError action
+                 (\e -> MTL.throwError $ message ++ ": " ++ e)
+
+
 runCompilation :: Compilation a -> Either String a
 runCompilation (Compilation action) =
   MTL.runIdentity $ MTL.runErrorT action
@@ -475,8 +481,8 @@ runCompilation (Compilation action) =
 
 compile :: Schema -> Either String D.Schema
 compile schema = runCompilation $ do
-  let entities = computeEntities (schemaEntityTemplates schema)
-                                 (schemaEntities schema)
+  entities <- compileEntities (schemaEntityTemplates schema)
+                              (schemaEntities schema)
   tables <- mapM compileTable
                  $ concatMap (\entity -> Map.elems $ entityTables entity)
                              (Map.elems entities)
@@ -487,50 +493,25 @@ compile schema = runCompilation $ do
     }
 
 
-flattenEntitySpecification
+compileEntities
   :: Map String EntitySpecification
-  -> EntitySpecification
-  -> EntitySpecificationFlattened
-flattenEntitySpecification templates entity =
-  let relevantTemplates =
-        reverse
-          $ unfoldr (\maybeEntity ->
-                       case maybeEntity of
-                         Nothing -> Nothing
-                         Just entity ->
-                           case entitySpecificationTemplate entity of
-                             Nothing -> Just (entity, Nothing)
-                             Just templateName ->
-                               case Map.lookup templateName templates of
-                                 Nothing -> Just (entity, Nothing)
-                                 Just template ->
-                                   Just (entity, Just template))
-                    (Just entity)
-      flattened = mconcat relevantTemplates
-  in EntitySpecificationFlattened {
-         entitySpecificationFlattenedExtends =
-           fromMaybe [] $ entitySpecificationExtends flattened,
-         entitySpecificationFlattenedVersioned =
-           fromMaybe False $ entitySpecificationVersioned flattened,
-         entitySpecificationFlattenedTimestamped =
-           fromMaybe False $ entitySpecificationTimestamped flattened,
-         entitySpecificationFlattenedHierarchy  =
-           fromMaybe NoHierarchySpecification
-            $ entitySpecificationHierarchy flattened,
-         entitySpecificationFlattenedKey =
-           fromMaybe [] $ entitySpecificationKey flattened,
-         entitySpecificationFlattenedColumns =
-           fromMaybe [] $ entitySpecificationColumns flattened,
-         entitySpecificationFlattenedRelatesTo =
-           fromMaybe [] $ entitySpecificationRelatesTo flattened
-       }
+  -> Map String EntitySpecification
+  -> Compilation (Map String Entity)
+compileEntities templates entities =
+  mapM (\(name, entity) ->
+          tagErrors ("Compiling entity \"" ++ name ++ "\"") $ do
+            flattened <- flattenEntitySpecification templates entity
+            entity <- compileEntity name flattened
+            return (name, entity))
+       (Map.toList entities)
+       >>= return . Map.fromList
 
 
-computeEntity
+compileEntity
   :: String
   -> EntitySpecificationFlattened
-  -> Entity
-computeEntity theEntityName flattened =
+  -> Compilation Entity
+compileEntity theEntityName flattened = do
   let versioned = entitySpecificationFlattenedVersioned flattened
       timestamped = entitySpecificationFlattenedTimestamped flattened
       allTableRoles = if versioned
@@ -599,115 +580,157 @@ computeEntity theEntityName flattened =
       dataColumns = []
       allColumns =
         concat [keyColumns, timestampColumns, dataColumns]
-      columnsForTableRole :: TableRole -> Map String Column
-      columnsForTableRole tableRole =
-        Map.fromList
-          $ map (\column ->
-                   let name =
-                         finalizeNameSpecification $ substituteNameSpecification
-                           (Map.fromList [("entity", theEntityName)])
-                           (preColumnName column)
-                   in (name, Column {
+      getColumnsForTableRole :: TableRole -> Compilation (Map String Column)
+      getColumnsForTableRole tableRole = do
+        mapM (\column -> do
+                name <- substituteNameSpecification
+                          (Map.fromList [("entity", theEntityName)])
+                          (preColumnName column)
+                        >>= finalizeNameSpecification
+                return (name, Column {
                                  columnName = name,
                                  columnType = preColumnType column,
                                  columnReadOnly = preColumnReadOnly column
                                }))
-                $ sortBy (on compare preColumnRole)
-                      $ filter (\column -> elem tableRole
-                                                $ preColumnTableRoles column)
-                               allColumns
-      mainTable =
-        Table {
-            tableName = theEntityName,
-            tableColumns = columnsForTableRole MainTableRole
-          }
-      versionTable =
-        Table {
-            tableName = theEntityName ++ "_version",
-            tableColumns = columnsForTableRole VersionTableRole
-          }
-      tables = Map.fromList $ if versioned
-                                then [(MainTableRole, mainTable),
-                                      (VersionTableRole, versionTable)]
-                                else [(MainTableRole, mainTable)]
-  in Entity {
-         entityName = theEntityName,
-         entityTables = tables
-       }
+             (sortBy (on compare preColumnRole)
+                     $ filter (\column -> elem tableRole
+                                               $ preColumnTableRoles column)
+                              allColumns)
+        >>= return . Map.fromList
+      tableSpecifications =
+        if versioned
+          then [(theEntityName, MainTableRole),
+                (theEntityName ++ "_version", VersionTableRole)]
+          else [(theEntityName, MainTableRole)]
+  tables <- mapM (\(name, role) -> do
+                     columns <- getColumnsForTableRole role
+                     let table = Table {
+                                     tableName = name,
+                                     tableColumns = columns
+                                   }
+                     return (role, table))
+                 tableSpecifications
+            >>= return . Map.fromList
+  return $ Entity {
+               entityName = theEntityName,
+               entityTables = tables
+             }
+
+
+flattenEntitySpecification
+  :: Map String EntitySpecification
+  -> EntitySpecification
+  -> Compilation EntitySpecificationFlattened
+flattenEntitySpecification templates entity = do
+  let getRelevantTemplates entity = do
+        case entitySpecificationTemplate entity of
+          Nothing -> return [entity]
+          Just templateName ->
+            case Map.lookup templateName templates of
+              Nothing -> return [entity]
+              Just template -> do
+                rest <- getRelevantTemplates template
+                return $ entity : rest
+  relevantTemplates <- getRelevantTemplates entity >>= return . reverse
+  traceJSON relevantTemplates $ return () -- IAK
+  let flattened = mconcat relevantTemplates
+  extends <- maybe (throwError "\"Extends\" field undefined.")
+                   return
+                   (entitySpecificationExtends flattened)
+  versioned <- maybe (throwError "\"Versioned\" field undefined.")
+                   return
+                   (entitySpecificationVersioned flattened)
+  timestamped <- maybe (throwError "\"Timestamped\" field undefined.")
+                   return
+                   (entitySpecificationTimestamped flattened)
+  hierarchy <- maybe (throwError "\"Hierarchy\" field undefined.")
+                     return
+                     (entitySpecificationHierarchy flattened)
+  key <- maybe (throwError "\"Key\" field undefined.")
+               return
+               (entitySpecificationKey flattened)
+  columns <- maybe (throwError "\"Columns\" field undefined.")
+                   return
+                   (entitySpecificationColumns flattened)
+  relatesTo <- maybe (throwError "\"RelatesTo\" field undefined.")
+                     return
+                     (entitySpecificationRelatesTo flattened)
+  return $ EntitySpecificationFlattened {
+               entitySpecificationFlattenedExtends = extends,
+               entitySpecificationFlattenedVersioned = versioned,
+               entitySpecificationFlattenedTimestamped = timestamped,
+               entitySpecificationFlattenedHierarchy = hierarchy,
+               entitySpecificationFlattenedKey = key,
+               entitySpecificationFlattenedColumns = columns,
+               entitySpecificationFlattenedRelatesTo = relatesTo
+            }
 
 
 finalizeNameSpecification
   :: NameSpecification
-  -> String
-finalizeNameSpecification (NameSpecification parts) =
-  concatMap (\part ->
-               case part of
-                 LiteralNameSpecificationPart literal -> literal
-                 _ -> "")
-            parts
+  -> Compilation String
+finalizeNameSpecification (NameSpecification parts) = do
+  mapM (\part ->
+          case part of
+            LiteralNameSpecificationPart literal -> return literal
+            VariableNameSpecificationPart variable ->
+              throwError $ "Reference to undefined variable \"" ++ variable
+                           ++ "\" in name specification.")
+       parts
+  >>= return . concat
 
 
 substituteNameSpecification
   :: Map String String
   -> NameSpecification
-  -> NameSpecification
-substituteNameSpecification bindings (NameSpecification parts) =
-  NameSpecification
-    $ map (\part ->
-             case part of
-               VariableNameSpecificationPart variable ->
-                 case Map.lookup variable bindings of
-                   Nothing -> part
-                   Just value -> LiteralNameSpecificationPart value
-               _ -> part)
-          parts
-
-
-computeEntities
-  :: Map String EntitySpecification
-  -> Map String EntitySpecification
-  -> Map String Entity
-computeEntities templates entities =
-  Map.mapWithKey
-    (\name entity ->
-       let flattened = flattenEntitySpecification templates entity
-           entity' = computeEntity name flattened
-       in entity')
-    entities
+  -> Compilation NameSpecification
+substituteNameSpecification bindings (NameSpecification parts) = do
+  parts <- mapM (\part -> do
+                   case part of
+                     VariableNameSpecificationPart variable -> do
+                       case Map.lookup variable bindings of
+                         Nothing -> return part
+                         Just value ->
+                           return $ LiteralNameSpecificationPart value
+                     _ -> return part)
+                parts
+  return $ NameSpecification parts
 
 
 compileTable :: Table -> Compilation D.CreateTable
-compileTable table =
-  let columns = concatMap computeColumn $ Map.elems $ tableColumns table
-  in case columns of
-       [] -> throwError "No columns."
-       _ ->
-         return $ D.CreateTable D.NoTemporary
-                    D.NoIfNotExists
-                      (D.SinglyQualifiedIdentifier Nothing $ tableName table)
-                      $ D.ColumnsAndConstraints
-                         (fromJust $ D.mkOneOrMore columns)
-                         []
+compileTable table = do
+  columns <- mapM compileColumn (Map.elems $ tableColumns table)
+             >>= return . concat
+  case D.mkOneOrMore columns of
+    Nothing -> throwError "No columns."
+    Just columns ->
+      return $ D.CreateTable D.NoTemporary
+                 D.NoIfNotExists
+                   (D.SinglyQualifiedIdentifier Nothing $ tableName table)
+                   $ D.ColumnsAndConstraints columns []
 
 
-computeColumn :: Column -> [D.ColumnDefinition]
-computeColumn column =
-  map (\subcolumn ->
-         D.ColumnDefinition
-          (D.UnqualifiedIdentifier
-            $ finalizeNameSpecification
-                $ substituteNameSpecification
+compileColumn :: Column -> Compilation [D.ColumnDefinition]
+compileColumn column = do
+  AnyType type' <- compileType $ columnType column
+  mapM (\subcolumn -> do
+          name <- substituteNameSpecification
                     (Map.fromList [("column", columnName column)])
-                    (subcolumnName subcolumn))
-          (D.JustType $ subcolumnType subcolumn)
-          [])
-      (case computeType $ columnType column of
-         AnyType type' -> typeSubcolumns type')
+                    (subcolumnName subcolumn)
+                  >>= finalizeNameSpecification
+          return $ D.ColumnDefinition (D.UnqualifiedIdentifier name)
+                                      (D.JustType $ subcolumnType subcolumn)
+                                      [])
+       (typeSubcolumns type')
 
 
-computeType :: TypeSpecification -> AnyType
-computeType (TypeSpecification "timestamp" []) = AnyType TimestampType
-computeType (TypeSpecification "uuid" []) = AnyType UUIDType
-computeType (TypeSpecification "maybe" [subtype]) =
-  AnyType (MaybeType $ computeType subtype)
-
+compileType :: TypeSpecification -> Compilation AnyType
+compileType (TypeSpecification "timestamp" []) = do
+  return $ AnyType TimestampType
+compileType (TypeSpecification "uuid" []) = do
+  return $ AnyType UUIDType
+compileType (TypeSpecification "maybe" [subtype]) = do
+  subtype <- compileType subtype
+  return $ AnyType (MaybeType subtype)
+compileType (TypeSpecification name _) = do
+  throwError $ "Unknown type \"" ++ name ++ "\"."
