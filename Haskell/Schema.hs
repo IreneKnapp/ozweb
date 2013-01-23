@@ -3,7 +3,6 @@
 module Schema
   (Schema(..),
    EntitySpecification(..),
-   HierarchySpecification(..),
    ColumnSpecification(..),
    RelatesToSpecification(..),
    NameSpecification(..),
@@ -74,18 +73,16 @@ data EntitySpecification =
       entitySpecificationExtends :: Maybe [String],
       entitySpecificationVersioned :: Maybe Bool,
       entitySpecificationTimestamped :: Maybe Bool,
-      entitySpecificationHierarchy :: Maybe HierarchySpecification,
       entitySpecificationKey :: Maybe [ColumnSpecification],
       entitySpecificationColumns :: Maybe [ColumnSpecification],
       entitySpecificationRelatesTo :: Maybe [RelatesToSpecification]
     }
 instance JSON.FromJSON EntitySpecification where
-  parseJSON (JSON.Object value) =
+  parseJSON (JSON.Object value) = do
     EntitySpecification <$> value .:? "template"
                         <*> value .:? "extends"
                         <*> value .:? "versioned"
                         <*> value .:? "timestamped"
-                        <*> value .:? "hierarchy"
                         <*> value .:? "key"
                         <*> value .:? "columns"
                         <*> value .:? "relates_to"
@@ -101,8 +98,6 @@ instance JSON.ToJSON EntitySpecification where
        $ entitySpecificationVersioned entity,
       maybe [] (\value -> ["timestamped" .= JSON.toJSON value])
        $ entitySpecificationTimestamped entity,
-      maybe [] (\value -> ["hierarchy" .= JSON.toJSON value])
-       $ entitySpecificationHierarchy entity,
       maybe [] (\value -> ["key" .= JSON.toJSON value])
        $ entitySpecificationKey entity,
       maybe [] (\value -> ["columns" .= JSON.toJSON value])
@@ -115,7 +110,6 @@ instance Monoid EntitySpecification where
                entitySpecificationExtends = Nothing,
                entitySpecificationVersioned = Nothing,
                entitySpecificationTimestamped = Nothing,
-               entitySpecificationHierarchy = Nothing,
                entitySpecificationKey = Nothing,
                entitySpecificationColumns = Nothing,
                entitySpecificationRelatesTo = Nothing
@@ -153,8 +147,6 @@ instance Monoid EntitySpecification where
              replace entitySpecificationVersioned,
            entitySpecificationTimestamped =
              replace entitySpecificationTimestamped,
-           entitySpecificationHierarchy =
-             useMonoid entitySpecificationHierarchy,
            entitySpecificationKey =
              replace entitySpecificationKey,
            entitySpecificationColumns =
@@ -169,7 +161,6 @@ data EntitySpecificationFlattened =
       entitySpecificationFlattenedExtends :: [String],
       entitySpecificationFlattenedVersioned :: Bool,
       entitySpecificationFlattenedTimestamped :: Bool,
-      entitySpecificationFlattenedHierarchy :: HierarchySpecification,
       entitySpecificationFlattenedKey :: [ColumnSpecification],
       entitySpecificationFlattenedColumns :: [ColumnSpecification],
       entitySpecificationFlattenedRelatesTo :: [RelatesToSpecification]
@@ -183,8 +174,6 @@ instance JSON.ToJSON EntitySpecificationFlattened where
         $ entitySpecificationFlattenedVersioned entity),
       "timestamped" .= (JSON.toJSON
         $ entitySpecificationFlattenedTimestamped entity),
-      "hierarchy" .= (JSON.toJSON
-        $ entitySpecificationFlattenedHierarchy entity),
       "key" .= (JSON.toJSON
         $ entitySpecificationFlattenedKey entity),
       "columns" .= (JSON.toJSON
@@ -193,49 +182,25 @@ instance JSON.ToJSON EntitySpecificationFlattened where
         $ entitySpecificationFlattenedRelatesTo entity)]
 
 
-data HierarchySpecification
-  = NoHierarchySpecification
-  | HierarchySpecification {
-        hierarchySpecificationPathColumns :: [String]
-      }
-instance JSON.FromJSON HierarchySpecification where
-  parseJSON JSON.Null = pure NoHierarchySpecification
-  parseJSON (JSON.Object value) =
-    HierarchySpecification <$> value .: "path_columns"
-  parseJSON _ = mzero
-instance JSON.ToJSON HierarchySpecification where
-  toJSON NoHierarchySpecification = JSON.Null
-  toJSON hierarchy =
-    JSON.object
-      ["path_columns" .= JSON.toJSON
-        (hierarchySpecificationPathColumns hierarchy)]
-instance Monoid HierarchySpecification where
-  mempty = NoHierarchySpecification
-  mappend a@(HierarchySpecification {}) b@(HierarchySpecification { }) =
-    HierarchySpecification {
-        hierarchySpecificationPathColumns =
-          hierarchySpecificationPathColumns b
-          ++ hierarchySpecificationPathColumns a
-      }
-  mappend _ b = b
-
-
-
 data ColumnSpecification =
   ColumnSpecification {
       columnSpecificationName :: NameSpecification,
-      columnSpecificationType :: TypeSpecification
+      columnSpecificationType :: TypeSpecification,
+      columnSpecificationConcretePathOf :: Maybe String
     }
 instance JSON.FromJSON ColumnSpecification where
   parseJSON (JSON.Object value) =
     ColumnSpecification <$> value .: "name"
                         <*> value .: "type"
+                        <*> value .:? "concrete_path_of"
   parseJSON _ = mzero
 instance JSON.ToJSON ColumnSpecification where
   toJSON column =
     JSON.object
       ["name" .= JSON.toJSON (columnSpecificationName column),
-       "type" .= JSON.toJSON (columnSpecificationType column)]
+       "type" .= JSON.toJSON (columnSpecificationType column),
+       "concrete_path_of" .= JSON.toJSON
+         (columnSpecificationConcretePathOf column)]
 
 
 data RelatesToSpecification =
@@ -632,7 +597,6 @@ flattenEntitySpecification templates entity = do
                 rest <- getRelevantTemplates template
                 return $ entity : rest
   relevantTemplates <- getRelevantTemplates entity >>= return . reverse
-  traceJSON relevantTemplates $ return () -- IAK
   let flattened = mconcat relevantTemplates
   extends <- maybe (throwError "\"Extends\" field undefined.")
                    return
@@ -643,9 +607,6 @@ flattenEntitySpecification templates entity = do
   timestamped <- maybe (throwError "\"Timestamped\" field undefined.")
                    return
                    (entitySpecificationTimestamped flattened)
-  hierarchy <- maybe (throwError "\"Hierarchy\" field undefined.")
-                     return
-                     (entitySpecificationHierarchy flattened)
   key <- maybe (throwError "\"Key\" field undefined.")
                return
                (entitySpecificationKey flattened)
@@ -659,7 +620,6 @@ flattenEntitySpecification templates entity = do
                entitySpecificationFlattenedExtends = extends,
                entitySpecificationFlattenedVersioned = versioned,
                entitySpecificationFlattenedTimestamped = timestamped,
-               entitySpecificationFlattenedHierarchy = hierarchy,
                entitySpecificationFlattenedKey = key,
                entitySpecificationFlattenedColumns = columns,
                entitySpecificationFlattenedRelatesTo = relatesTo
@@ -698,16 +658,17 @@ substituteNameSpecification bindings (NameSpecification parts) = do
 
 
 compileTable :: Table -> Compilation D.CreateTable
-compileTable table = do
-  columns <- mapM compileColumn (Map.elems $ tableColumns table)
-             >>= return . concat
-  case D.mkOneOrMore columns of
-    Nothing -> throwError "No columns."
-    Just columns ->
-      return $ D.CreateTable D.NoTemporary
-                 D.NoIfNotExists
-                   (D.SinglyQualifiedIdentifier Nothing $ tableName table)
-                   $ D.ColumnsAndConstraints columns []
+compileTable table =
+  tagErrors ("Compiling table \"" ++ (tableName table) ++ "\"") $ do
+    columns <- mapM compileColumn (Map.elems $ tableColumns table)
+               >>= return . concat
+    case D.mkOneOrMore columns of
+      Nothing -> throwError "No columns."
+      Just columns ->
+        return $ D.CreateTable D.NoTemporary
+                   D.NoIfNotExists
+                     (D.SinglyQualifiedIdentifier Nothing $ tableName table)
+                     $ D.ColumnsAndConstraints columns []
 
 
 compileColumn :: Column -> Compilation [D.ColumnDefinition]

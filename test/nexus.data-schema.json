@@ -8,7 +8,6 @@
       "extends": [],
       "versioned": true,
       "timestamped": true,
-      "hierarchy": null,
       "key": [{
         "name": [{
           "type": "variable",
@@ -46,9 +45,11 @@
     },
     "hierarchical": {
       "template": "reference",
-      "hierarchy": {
-        "path_columns": ["name"]
-      }
+      "columns": [{
+        "name": "name_path",
+        "type": ["array", "text"],
+        "concrete_path_of": "name"
+      }]
     }
   },
   
