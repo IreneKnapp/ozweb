@@ -19,7 +19,7 @@
         "type": "uuid"
       }],
       "columns": [],
-      "relates_to": []
+      "relations": []
     },
     "relation": {
       "template": "normal",
@@ -63,7 +63,7 @@
     },
     "content": {
       "template": "normal",
-      "relates_to": [{
+      "relations": [{
         "entity": "content_type",
         "purpose": null,
         "required": true,
@@ -72,7 +72,7 @@
     },
     "categorization": {
       "template": "relation",
-      "relates_to": [{
+      "relations": [{
         "entity": "content",
         "purpose": null,
         "required": true,
@@ -90,7 +90,7 @@
         "name": "password",
         "type": "password"
       }],
-      "relates_to": [{
+      "relations": [{
         "entity": "email",
         "purpose": "primary",
         "required": true,
@@ -103,7 +103,7 @@
         "name": "email",
         "type": "email"
       }],
-      "relates_to": [{
+      "relations": [{
         "entity": "person",
         "purpose": null,
         "required": true,
@@ -126,7 +126,7 @@
         "name": "data",
         "type": "blob"
       }],
-      "relates_to": [{
+      "relations": [{
         "entity": "image_format",
         "purpose": null,
         "required": true,

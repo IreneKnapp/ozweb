@@ -4,7 +4,7 @@ module Schema
   (Schema(..),
    EntitySpecification(..),
    ColumnSpecification(..),
-   RelatesToSpecification(..),
+   RelationSpecification(..),
    NameSpecification(..),
    NameSpecificationPart(..),
    TypeSpecification(..),
@@ -75,7 +75,7 @@ data EntitySpecification =
       entitySpecificationTimestamped :: Maybe Bool,
       entitySpecificationKey :: Maybe [ColumnSpecification],
       entitySpecificationColumns :: Maybe [ColumnSpecification],
-      entitySpecificationRelatesTo :: Maybe [RelatesToSpecification]
+      entitySpecificationRelations :: Maybe [RelationSpecification]
     }
 instance JSON.FromJSON EntitySpecification where
   parseJSON (JSON.Object value) = do
@@ -85,7 +85,7 @@ instance JSON.FromJSON EntitySpecification where
                         <*> value .:? "timestamped"
                         <*> value .:? "key"
                         <*> value .:? "columns"
-                        <*> value .:? "relates_to"
+                        <*> value .:? "relations"
   parseJSON _ = mzero
 instance JSON.ToJSON EntitySpecification where
   toJSON entity =
@@ -102,8 +102,8 @@ instance JSON.ToJSON EntitySpecification where
        $ entitySpecificationKey entity,
       maybe [] (\value -> ["columns" .= JSON.toJSON value])
        $ entitySpecificationColumns entity,
-      maybe [] (\value -> ["relates_to" .= JSON.toJSON value])
-       $ entitySpecificationRelatesTo entity]
+      maybe [] (\value -> ["relations" .= JSON.toJSON value])
+       $ entitySpecificationRelations entity]
 instance Monoid EntitySpecification where
   mempty = EntitySpecification {
                entitySpecificationTemplate = Nothing,
@@ -112,7 +112,7 @@ instance Monoid EntitySpecification where
                entitySpecificationTimestamped = Nothing,
                entitySpecificationKey = Nothing,
                entitySpecificationColumns = Nothing,
-               entitySpecificationRelatesTo = Nothing
+               entitySpecificationRelations = Nothing
              }
   mappend a b =
     let replace
@@ -151,8 +151,8 @@ instance Monoid EntitySpecification where
              replace entitySpecificationKey,
            entitySpecificationColumns =
              concatenate entitySpecificationColumns,
-           entitySpecificationRelatesTo =
-             concatenate entitySpecificationRelatesTo
+           entitySpecificationRelations =
+             concatenate entitySpecificationRelations
          }
 
 
@@ -163,7 +163,7 @@ data EntitySpecificationFlattened =
       entitySpecificationFlattenedTimestamped :: Bool,
       entitySpecificationFlattenedKey :: [ColumnSpecification],
       entitySpecificationFlattenedColumns :: [ColumnSpecification],
-      entitySpecificationFlattenedRelatesTo :: [RelatesToSpecification]
+      entitySpecificationFlattenedRelations :: [RelationSpecification]
     }
 instance JSON.ToJSON EntitySpecificationFlattened where
   toJSON entity =
@@ -178,8 +178,8 @@ instance JSON.ToJSON EntitySpecificationFlattened where
         $ entitySpecificationFlattenedKey entity),
       "columns" .= (JSON.toJSON
         $ entitySpecificationFlattenedColumns entity),
-      "relates_to" .= (JSON.toJSON
-        $ entitySpecificationFlattenedRelatesTo entity)]
+      "relations" .= (JSON.toJSON
+        $ entitySpecificationFlattenedRelations entity)]
 
 
 data ColumnSpecification =
@@ -203,31 +203,31 @@ instance JSON.ToJSON ColumnSpecification where
          (columnSpecificationConcretePathOf column)]
 
 
-data RelatesToSpecification =
-  RelatesToSpecification {
-      relatesToSpecificationEntity :: String,
-      relatesToSpecificationPurpose :: Maybe String,
-      relatesToSpecificationRequired :: Bool,
-      relatesToSpecificationUnique :: Bool
+data RelationSpecification =
+  RelationSpecification {
+      relationSpecificationEntity :: String,
+      relationSpecificationPurpose :: Maybe String,
+      relationSpecificationRequired :: Bool,
+      relationSpecificationUnique :: Bool
     }
-instance JSON.FromJSON RelatesToSpecification where
+instance JSON.FromJSON RelationSpecification where
   parseJSON (JSON.Object value) = do
     purpose <- value .: "purpose"
     purpose <- case purpose of
                  JSON.Null -> return Nothing
                  JSON.String text -> return $ Just $ Text.unpack text
                  _ -> mzero
-    RelatesToSpecification <$> value .: "entity"
-                           <*> pure purpose
-                           <*> value .: "required"
-                           <*> value .: "unique"
-instance JSON.ToJSON RelatesToSpecification where
+    RelationSpecification <$> value .: "entity"
+                          <*> pure purpose
+                          <*> value .: "required"
+                          <*> value .: "unique"
+instance JSON.ToJSON RelationSpecification where
   toJSON relation =
     JSON.object
-      ["entity" .= JSON.toJSON (relatesToSpecificationEntity relation),
-       "purpose" .= JSON.toJSON (relatesToSpecificationPurpose relation),
-       "required" .= JSON.toJSON (relatesToSpecificationRequired relation),
-       "unique" .= JSON.toJSON (relatesToSpecificationUnique relation)]
+      ["entity" .= JSON.toJSON (relationSpecificationEntity relation),
+       "purpose" .= JSON.toJSON (relationSpecificationPurpose relation),
+       "required" .= JSON.toJSON (relationSpecificationRequired relation),
+       "unique" .= JSON.toJSON (relationSpecificationUnique relation)]
 
 
 data NameSpecification = NameSpecification [NameSpecificationPart]
@@ -451,7 +451,7 @@ compile schema = runCompilation $ do
   tables <- mapM compileTable
                  $ concatMap (\entity -> Map.elems $ entityTables entity)
                              (Map.elems entities)
-  return $ traceJSON entities $ D.Schema {
+  return $ D.Schema {
       D.schemaID = schemaID schema,
       D.schemaVersion = schemaVersion schema,
       D.schemaTables = tables
@@ -613,16 +613,16 @@ flattenEntitySpecification templates entity = do
   columns <- maybe (throwError "\"Columns\" field undefined.")
                    return
                    (entitySpecificationColumns flattened)
-  relatesTo <- maybe (throwError "\"RelatesTo\" field undefined.")
+  relations <- maybe (throwError "\"Relations\" field undefined.")
                      return
-                     (entitySpecificationRelatesTo flattened)
+                     (entitySpecificationRelations flattened)
   return $ EntitySpecificationFlattened {
                entitySpecificationFlattenedExtends = extends,
                entitySpecificationFlattenedVersioned = versioned,
                entitySpecificationFlattenedTimestamped = timestamped,
                entitySpecificationFlattenedKey = key,
                entitySpecificationFlattenedColumns = columns,
-               entitySpecificationFlattenedRelatesTo = relatesTo
+               entitySpecificationFlattenedRelations = relations
             }
 
 
