@@ -5,6 +5,7 @@ import qualified Data.ByteString.Lazy as LBS
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import qualified Data.Text.IO as Text
+import qualified Language.SQL.SQLite as SQL
 import qualified System.Environment as System
 
 import qualified Database as D
@@ -41,4 +42,4 @@ initialize schemaFilename databaseFilename = do
           putStrLn "Unable to compile schema."
         Right schema -> do
           let statements = D.createSchema schema
-          putStrLn $ show $ D.showTokens statements
+          putStrLn $ show $ SQL.showTokens statements

@@ -2,12 +2,67 @@
   "id": "b1a8f23b-2c5d-4c46-8a06-3ee8c095d203",
   "version": "1357238210",
   
+  "entity_flags": [
+    "versioned",
+    "timestamped"
+  ],
+
+  "column_flags": [
+  ],
+  
+  "table_roles": {
+    "main": {
+      "name": [{
+        "type": "variable",
+        "name": "entity"
+      }]
+    },
+    "version": {
+      "name": [{
+        "type": "variable",
+        "name": "entity"
+      }, {
+        "type": "constant",
+        "value": "_version"
+      }]
+    }
+  },
+
+  "column_roles": {
+    "key": {
+      "priority": 0
+    },
+    "timestamp": {
+      "priority": 2
+    },
+    "data": {
+      "priority": 1
+    }
+  },
+
+  "column_templates": {
+    "key": {
+      "table_roles": [
+        "main",
+        ["when", "versioned", "version"]
+      ],
+      "role": "key"
+    },
+    "timestamp": {
+      "type": "timestamp",
+      "role": "timestamp"
+    }
+  },
+
   "entity_templates": {
     "normal": {
       "template": null,
-      "versioned": true,
-      "timestamped": true,
+      "flags": {
+        "versioned": true,
+        "timestamped": true
+      },
       "key": [{
+        "template": "key",
         "name": [{
           "type": "variable",
           "name": "entity"
@@ -16,31 +71,53 @@
           "value": "_id"
         }],
         "type": "uuid"
-      }],
-      "columns": [],
+      }, ["when", "versioned", {
+        "name": "version_id",
+        "type": "uuid",
+        "table_roles": ["version"]
+      }]],
+      "columns": [
+        ["when", "timestamped", {
+          "template": "timestamp",
+          "name": "created_at",
+          "table_roles": ["main"]
+        }, {
+          "template": "timestamp",
+          "name": "modified_at",
+          "table_roles": [["when", ["not", "versioned"], "main"],
+                          ["when", "versioned", "version"]]
+        }, {
+          "template": "timestamp",
+          "name": "deleted_at",
+          "table_roles": ["main"]
+        }]
+      ],
       "relations": []
     },
     "relation": {
       "template": "normal",
-      "versioned": false,
-      "timestamped": false,
+      "flags": {
+        "versioned": false,
+        "timestamped": false
+      },
       "key": []
     },
     "reference": {
       "template": "normal",
-      "versioned": false,
-      "timestamped": false,
+      "flags": {
+        "versioned": false,
+        "timestamped": false
+      },
       "columns": [{
-        "name": "name",
-        "type": "text"
-      }, {
         "name": "memo",
         "type": ["maybe", "text"]
       }]
     },
     "account": {
       "template": "normal",
-      "versioned": false
+      "flasgs": {
+        "versioned": false
+      }
     },
     "hierarchical": {
       "template": "reference",
@@ -55,7 +132,13 @@
   "entities": {
     "category": {
       "template": "hierarchical",
-      "versioned": true
+      "flags": {
+        "versioned": true
+      },
+      "columns": [{
+        "name": "name",
+        "type": "text"
+      }]
     },
     "categorization": {
       "template": "relation",
@@ -97,7 +180,11 @@
       }]
     },
     "image_format": {
-      "template": "reference"
+      "template": "reference",
+      "columns": [{
+        "name": "name",
+        "type": "text"
+      }]
     },
     "image": {
       "template": "normal",

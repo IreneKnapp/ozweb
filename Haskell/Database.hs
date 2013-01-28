@@ -1,9 +1,6 @@
 module Database
   (Schema(..),
-   createSchema,
-   module Language.SQL.SQLite,
-   UUID.UUID,
-   Timestamp.Timestamp)
+   createSchema)
   where
 
 import qualified Data.Binary as Binary

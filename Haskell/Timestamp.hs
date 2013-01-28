@@ -7,6 +7,8 @@ import Data.Word
 
 
 data Timestamp = Timestamp Word64
+instance Show Timestamp where
+  show (Timestamp a) = show a
 instance Eq Timestamp where
   (==) (Timestamp a) (Timestamp b) = (==) a b
 instance Ord Timestamp where
