@@ -16,6 +16,7 @@ import qualified Control.Monad.Identity as MTL
 import Data.Aeson ((.:), (.:?), (.!=), (.=))
 import qualified Data.Aeson as JSON
 import qualified Data.Aeson.Types as JSON
+import qualified Data.HashMap.Strict as HashMap
 import qualified Data.Map as Map
 import qualified Data.Text as Text
 import qualified Data.UUID as UUID
@@ -25,6 +26,7 @@ import qualified Timestamp as Timestamp
 import Control.Applicative
 import Control.Monad
 import Data.Function
+import Data.HashMap.Strict (HashMap)
 import Data.List
 import Data.Map (Map)
 import Data.Maybe
@@ -33,6 +35,15 @@ import Data.Text (Text)
 
 import Debug.Trace
 import Trace
+
+
+checkAllowedKeys :: [Text] -> HashMap Text JSON.Value -> JSON.Parser ()
+checkAllowedKeys allowedKeys theMap = do
+  mapM_ (\(key, _) -> do
+            if elem key allowedKeys
+              then return ()
+              else fail $ "Unknown key " ++ show key ++ ".")
+        (HashMap.toList theMap)
 
 
 instance JSON.FromJSON UUID.UUID where
@@ -59,7 +70,12 @@ data Schema =
       schemaEntities :: Map String EntitySpecification
     }
 instance JSON.FromJSON Schema where
-  parseJSON (JSON.Object value) =
+  parseJSON (JSON.Object value) = do
+    checkAllowedKeys ["id",
+                      "version",
+                      "entity_templates",
+                      "entities"]
+                     value
     Schema <$> value .: "id"
            <*> value .: "version"
            <*> (value .:? "entity_templates" .!= Map.empty)
@@ -70,7 +86,6 @@ instance JSON.FromJSON Schema where
 data EntitySpecification =
   EntitySpecification {
       entitySpecificationTemplate :: Maybe String,
-      entitySpecificationExtends :: Maybe [String],
       entitySpecificationVersioned :: Maybe Bool,
       entitySpecificationTimestamped :: Maybe Bool,
       entitySpecificationKey :: Maybe [ColumnSpecification],
@@ -79,8 +94,14 @@ data EntitySpecification =
     }
 instance JSON.FromJSON EntitySpecification where
   parseJSON (JSON.Object value) = do
+    checkAllowedKeys ["template",
+                      "versioned",
+                      "timestamped",
+                      "key",
+                      "columns",
+                      "relations"]
+                     value
     EntitySpecification <$> value .:? "template"
-                        <*> value .:? "extends"
                         <*> value .:? "versioned"
                         <*> value .:? "timestamped"
                         <*> value .:? "key"
@@ -92,8 +113,6 @@ instance JSON.ToJSON EntitySpecification where
     JSON.object $ concat
      [maybe [] (\value -> ["template" .= JSON.toJSON value])
        $ entitySpecificationTemplate entity,
-      maybe [] (\value -> ["extends" .= JSON.toJSON value])
-       $ entitySpecificationExtends entity,
       maybe [] (\value -> ["versioned" .= JSON.toJSON value])
        $ entitySpecificationVersioned entity,
       maybe [] (\value -> ["timestamped" .= JSON.toJSON value])
@@ -107,7 +126,6 @@ instance JSON.ToJSON EntitySpecification where
 instance Monoid EntitySpecification where
   mempty = EntitySpecification {
                entitySpecificationTemplate = Nothing,
-               entitySpecificationExtends = Nothing,
                entitySpecificationVersioned = Nothing,
                entitySpecificationTimestamped = Nothing,
                entitySpecificationKey = Nothing,
@@ -141,8 +159,6 @@ instance Monoid EntitySpecification where
     in EntitySpecification {
            entitySpecificationTemplate =
              replace entitySpecificationTemplate,
-           entitySpecificationExtends =
-             concatenate entitySpecificationExtends,
            entitySpecificationVersioned =
              replace entitySpecificationVersioned,
            entitySpecificationTimestamped =
@@ -158,7 +174,6 @@ instance Monoid EntitySpecification where
 
 data EntitySpecificationFlattened =
   EntitySpecificationFlattened {
-      entitySpecificationFlattenedExtends :: [String],
       entitySpecificationFlattenedVersioned :: Bool,
       entitySpecificationFlattenedTimestamped :: Bool,
       entitySpecificationFlattenedKey :: [ColumnSpecification],
@@ -168,9 +183,7 @@ data EntitySpecificationFlattened =
 instance JSON.ToJSON EntitySpecificationFlattened where
   toJSON entity =
     JSON.object
-     ["extends" .= (JSON.toJSON
-        $ entitySpecificationFlattenedExtends entity),
-      "versioned" .= (JSON.toJSON
+     ["versioned" .= (JSON.toJSON
         $ entitySpecificationFlattenedVersioned entity),
       "timestamped" .= (JSON.toJSON
         $ entitySpecificationFlattenedTimestamped entity),
@@ -189,7 +202,11 @@ data ColumnSpecification =
       columnSpecificationConcretePathOf :: Maybe String
     }
 instance JSON.FromJSON ColumnSpecification where
-  parseJSON (JSON.Object value) =
+  parseJSON (JSON.Object value) = do
+    checkAllowedKeys ["name",
+                      "type",
+                      "concrete_path_of"]
+                     value
     ColumnSpecification <$> value .: "name"
                         <*> value .: "type"
                         <*> value .:? "concrete_path_of"
@@ -208,10 +225,17 @@ data RelationSpecification =
       relationSpecificationEntity :: String,
       relationSpecificationPurpose :: Maybe String,
       relationSpecificationRequired :: Bool,
-      relationSpecificationUnique :: Bool
+      relationSpecificationUnique :: Bool,
+      relationSpecificationKey :: Maybe [NameSpecification]
     }
 instance JSON.FromJSON RelationSpecification where
   parseJSON (JSON.Object value) = do
+    checkAllowedKeys ["entity",
+                      "purpose",
+                      "required",
+                      "unique",
+                      "key"]
+                     value
     purpose <- value .: "purpose"
     purpose <- case purpose of
                  JSON.Null -> return Nothing
@@ -221,6 +245,7 @@ instance JSON.FromJSON RelationSpecification where
                           <*> pure purpose
                           <*> value .: "required"
                           <*> value .: "unique"
+                          <*> value .:? "key"
 instance JSON.ToJSON RelationSpecification where
   toJSON relation =
     JSON.object
@@ -251,8 +276,16 @@ instance JSON.FromJSON NameSpecificationPart where
     type' <- value .: "type"
     return (type' :: String)
     case type' of
-      "constant" -> LiteralNameSpecificationPart <$> value .: "value"
-      "variable" -> VariableNameSpecificationPart <$> value .: "name"
+      "constant" -> do
+        checkAllowedKeys ["type",
+                          "value"]
+                         value
+        LiteralNameSpecificationPart <$> value .: "value"
+      "variable" -> do
+        checkAllowedKeys ["type",
+                          "name"]
+                         value
+        VariableNameSpecificationPart <$> value .: "name"
       _ -> mzero
   parseJSON _ = mzero
 instance JSON.ToJSON NameSpecificationPart where
@@ -408,9 +441,23 @@ instance Type TimestampType where
          subcolumnType =
            D.Type D.TypeAffinityNone
                   (D.TypeName $ fromJust $ D.mkOneOrMore
-                    [D.UnqualifiedIdentifier"integer"])
+                    [D.UnqualifiedIdentifier "integer"])
                   D.NoTypeSize
        }]
+
+
+data EmailType = EmailType
+instance Type EmailType where
+  typeSubcolumns EmailType =
+    [Subcolumn {
+        subcolumnName =
+          NameSpecification [VariableNameSpecificationPart "column"],
+        subcolumnType =
+          D.Type D.TypeAffinityNone
+                 (D.TypeName $ fromJust $ D.mkOneOrMore
+                   [D.UnqualifiedIdentifier "text"])
+                 D.NoTypeSize
+      }]
 
 
 data MaybeType = MaybeType AnyType
@@ -462,21 +509,29 @@ compileEntities
   :: Map String EntitySpecification
   -> Map String EntitySpecification
   -> Compilation (Map String Entity)
-compileEntities templates entities =
-  mapM (\(name, entity) ->
+compileEntities templates entities = do
+  foldM (\soFar (name, entity) -> do
           tagErrors ("Compiling entity \"" ++ name ++ "\"") $ do
             flattened <- flattenEntitySpecification templates entity
-            entity <- compileEntity name flattened
-            return (name, entity))
-       (Map.toList entities)
-       >>= return . Map.fromList
+            entity <- compileEntity name flattened soFar
+            return $ Map.insert name entity soFar)
+        Map.empty
+        (Map.toList entities)
+
+
+topologicallySortEntities
+  :: Map String EntitySpecificationFlattened
+  -> Compilation [EntitySpecificationFlattened]
+topologicallySortEntities allEntities = do
+  return []
 
 
 compileEntity
   :: String
   -> EntitySpecificationFlattened
+  -> Map String Entity
   -> Compilation Entity
-compileEntity theEntityName flattened = do
+compileEntity theEntityName flattened otherEntities = do
   let versioned = entitySpecificationFlattenedVersioned flattened
       timestamped = entitySpecificationFlattenedTimestamped flattened
       allTableRoles = if versioned
@@ -599,9 +654,6 @@ flattenEntitySpecification templates entity = do
                 return $ entity : rest
   relevantTemplates <- getRelevantTemplates entity >>= return . reverse
   let flattened = mconcat relevantTemplates
-  extends <- maybe (throwError "\"Extends\" field undefined.")
-                   return
-                   (entitySpecificationExtends flattened)
   versioned <- maybe (throwError "\"Versioned\" field undefined.")
                    return
                    (entitySpecificationVersioned flattened)
@@ -618,7 +670,6 @@ flattenEntitySpecification templates entity = do
                      return
                      (entitySpecificationRelations flattened)
   return $ EntitySpecificationFlattened {
-               entitySpecificationFlattenedExtends = extends,
                entitySpecificationFlattenedVersioned = versioned,
                entitySpecificationFlattenedTimestamped = timestamped,
                entitySpecificationFlattenedKey = key,
@@ -691,8 +742,11 @@ compileType (TypeSpecification "timestamp" []) = do
   return $ AnyType TimestampType
 compileType (TypeSpecification "uuid" []) = do
   return $ AnyType UUIDType
+compileType (TypeSpecification "email" []) = do
+  return $ AnyType EmailType
 compileType (TypeSpecification "maybe" [subtype]) = do
   subtype <- compileType subtype
   return $ AnyType (MaybeType subtype)
 compileType (TypeSpecification name _) = do
   throwError $ "Unknown type \"" ++ name ++ "\"."
+

@@ -31,10 +31,10 @@ help = do
 initialize :: FilePath -> FilePath -> IO ()
 initialize schemaFilename databaseFilename = do
   schemaText <- Text.readFile schemaFilename
-  case Aeson.decode $ LBS.fromChunks [Text.encodeUtf8 schemaText] of
-    Nothing -> do
-      putStrLn "Invalid schema."
-    Just schema -> do
+  case Aeson.eitherDecode' $ LBS.fromChunks [Text.encodeUtf8 schemaText] of
+    Left message -> do
+      putStrLn $ "Invalid schema: " ++ message
+    Right schema -> do
       case S.compile schema of
         Left message -> do
           putStrLn message

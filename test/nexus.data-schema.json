@@ -5,7 +5,6 @@
   "entity_templates": {
     "normal": {
       "template": null,
-      "extends": [],
       "versioned": true,
       "timestamped": true,
       "key": [{
@@ -58,26 +57,13 @@
       "template": "hierarchical",
       "versioned": true
     },
-    "content_type": {
-      "template": "hierarchical"
-    },
-    "content": {
-      "template": "normal",
-      "relations": [{
-        "entity": "content_type",
-        "purpose": null,
-        "required": true,
-        "unique": false
-      }]
-    },
     "categorization": {
       "template": "relation",
+      "key": [{
+        "name": "content_id",
+        "type": "uuid"
+      }],
       "relations": [{
-        "entity": "content",
-        "purpose": null,
-        "required": true,
-        "unique": true
-      }, {
         "entity": "category",
         "purpose": null,
         "required": true,
@@ -115,7 +101,6 @@
     },
     "image": {
       "template": "normal",
-      "extends": ["content"],
       "columns": [{
         "name": "width",
         "type": "integer"
@@ -127,6 +112,12 @@
         "type": "blob"
       }],
       "relations": [{
+        "entity": "content",
+        "purpose": null,
+        "required": true,
+        "unique": true,
+        "key": ["image_id"]
+      }, {
         "entity": "image_format",
         "purpose": null,
         "required": true,
