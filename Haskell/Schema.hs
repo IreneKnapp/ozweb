@@ -13,7 +13,6 @@ module Schema
 
 import qualified Control.Monad.Error as MTL
 import qualified Control.Monad.Identity as MTL
-import Data.Aeson ((.:), (.:?), (.!=), (.=))
 import qualified Data.Aeson as JSON
 import qualified Data.Aeson.Types as JSON
 import qualified Data.HashMap.Strict as HashMap
@@ -27,6 +26,7 @@ import qualified Timestamp as Timestamp
 
 import Control.Applicative
 import Control.Monad
+import Data.Aeson ((.!=), (.=))
 import Data.Function
 import Data.HashMap.Strict (HashMap)
 import Data.List
@@ -35,6 +35,8 @@ import Data.Maybe
 import Data.Monoid
 import Data.Set (Set)
 import Data.Text (Text)
+
+import JSON
 
 import Debug.Trace
 import Trace
@@ -73,6 +75,7 @@ data Schema =
   Schema {
       schemaID :: UUID.UUID,
       schemaVersion :: Timestamp.Timestamp,
+      schemaTypes :: Map String TypeSpecification,
       schemaTableRoles :: Map String TableRoleSpecification,
       schemaColumnFlags :: Set String,
       schemaColumnRoles :: Map String ColumnRoleSpecification,
@@ -85,6 +88,7 @@ instance JSON.FromJSON Schema where
   parseJSON (JSON.Object value) = do
     checkAllowedKeys ["id",
                       "version",
+                      "types",
                       "table_roles",
                       "column_flags",
                       "column_roles",
@@ -95,6 +99,7 @@ instance JSON.FromJSON Schema where
                      value
     Schema <$> value .: "id"
            <*> value .: "version"
+           <*> (value .:? "types" .!= Map.empty)
            <*> (value .:? "table_roles" .!= Map.empty)
            <*> (value .:? "column_flags" .!= Set.empty)
            <*> (value .:? "column_roles" .!= Map.empty)
@@ -108,6 +113,7 @@ instance JSON.ToJSON Schema where
     JSON.object
      ["id" .= (JSON.toJSON $ schemaID schema),
       "version" .= (JSON.toJSON $ schemaVersion schema),
+      "types" .= (JSON.toJSON $ schemaTypes schema),
       "table_roles" .= (JSON.toJSON $ schemaTableRoles schema),
       "column_flags" .= (JSON.toJSON $ Set.toList $ schemaColumnFlags schema),
       "column_roles" .= (JSON.toJSON $ schemaColumnRoles schema),
@@ -119,7 +125,8 @@ instance JSON.ToJSON Schema where
 
 data TableRoleSpecification =
   TableRoleSpecification {
-      tableRoleSpecificationName :: NameSpecification
+      tableRoleSpecificationName
+        :: ConditionalSpecification NameSpecification
     }
 instance JSON.FromJSON TableRoleSpecification where
   parseJSON (JSON.Object value) = do
@@ -136,12 +143,18 @@ instance JSON.ToJSON TableRoleSpecification where
 
 data EntitySpecification =
   EntitySpecification {
-      entitySpecificationTemplate :: Maybe String,
-      entitySpecificationFlags :: Maybe (Map String Bool),
-      entitySpecificationTables :: Maybe [String],
-      entitySpecificationKey :: Maybe [ColumnSpecification],
-      entitySpecificationColumns :: Maybe [ColumnSpecification],
-      entitySpecificationRelations :: Maybe [RelationSpecification]
+      entitySpecificationTemplate
+        :: Maybe String,
+      entitySpecificationFlags
+        :: Maybe (Map String Bool),
+      entitySpecificationTables
+        :: Maybe (ConditionalListSpecification String),
+      entitySpecificationKey
+        :: Maybe (ConditionalListSpecification ColumnSpecification),
+      entitySpecificationColumns
+        :: Maybe (ConditionalListSpecification ColumnSpecification),
+      entitySpecificationRelations
+        :: Maybe (ConditionalListSpecification RelationSpecification)
     }
 instance JSON.FromJSON EntitySpecification where
   parseJSON (JSON.Object value) = do
@@ -250,16 +263,92 @@ instance JSON.ToJSON EntitySpecificationFlattened where
         $ entitySpecificationFlattenedRelations entity)]
 
 
+flattenEntitySpecification
+  :: Set String
+  -> Map String EntitySpecification
+  -> Set String
+  -> Map String ColumnSpecification
+  -> EntitySpecification
+  -> Compilation EntitySpecificationFlattened
+flattenEntitySpecification
+    allFlags templates allColumnFlags columnTemplates entity = do
+  let getRelevantTemplates entity = do
+        case entitySpecificationTemplate entity of
+          Nothing -> return [entity]
+          Just templateName ->
+            case Map.lookup templateName templates of
+              Nothing -> return [entity]
+              Just template -> do
+                rest <- getRelevantTemplates template
+                return $ entity : rest
+  relevantTemplates <- getRelevantTemplates entity >>= return . reverse
+  let flattened = mconcat relevantTemplates
+  flags <- maybe (throwError "\"Flags\" field undefined.")
+                 return
+                 (entitySpecificationFlags flattened)
+  let presentFlags = Set.fromList $ map fst $ Map.toList flags
+      unknownFlags = Set.difference presentFlags allFlags
+  if not $ Set.null unknownFlags
+    then throwError $ "Unknown flags "
+                      ++ (intercalate ", " $ map show
+                           $ Set.toList unknownFlags)
+                      ++ "."
+    else return ()
+  let missingFlags = Set.difference allFlags presentFlags 
+  if not $ Set.null missingFlags
+    then throwError $ "Missing flags "
+                      ++ (intercalate ", " $ map show
+                           $ Set.toList missingFlags)
+                      ++ "."
+    else return ()
+  tables <- maybe (throwError "\"Tables\" field undefined.")
+                  return
+                  (entitySpecificationTables flattened)
+  if null tables
+    then throwError "Entity has no tables."
+    else return ()
+  key <- maybe (throwError "\"Key\" field undefined.")
+               return
+               (entitySpecificationKey flattened)
+  key <-
+    mapM (flattenKeyColumnSpecification allColumnFlags columnTemplates)
+          key
+  columns <- maybe (throwError "\"Columns\" field undefined.")
+                   return
+                   (entitySpecificationColumns flattened)
+  columns <-
+    mapM (flattenColumnSpecification flags allColumnFlags columnTemplates)
+         columns
+  relations <- maybe (throwError "\"Relations\" field undefined.")
+                     return
+                     (entitySpecificationRelations flattened)
+  return $ EntitySpecificationFlattened {
+               entitySpecificationFlattenedFlags = flags,
+               entitySpecificationFlattenedTables = tables,
+               entitySpecificationFlattenedKey = key,
+               entitySpecificationFlattenedColumns = columns,
+               entitySpecificationFlattenedRelations = relations
+            }
+
+
 data ColumnSpecification =
   ColumnSpecification {
-      columnSpecificationTemplate :: Maybe String,
-      columnSpecificationFlags :: Maybe (Map String Bool),
-      columnSpecificationName :: Maybe NameSpecification,
-      columnSpecificationType :: Maybe TypeSpecification,
-      columnSpecificationTableRoles :: Maybe (Set String),
-      columnSpecificationColumnRole :: Maybe String,
-      columnSpecificationReadOnly :: Maybe Bool,
-      columnSpecificationConcretePathOf :: Maybe String
+      columnSpecificationTemplate
+        :: Maybe (ConditionalSpecification String),
+      columnSpecificationFlags
+        :: Maybe (ConditionalMapSpecification String Bool),
+      columnSpecificationName
+        :: Maybe (ConditionalSpecification NameSpecification),
+      columnSpecificationType
+        :: Maybe (ConditionalSpecification TypeSpecification),
+      columnSpecificationTableRoles
+        :: Maybe (ConditionalListSpecification String),
+      columnSpecificationColumnRole
+        :: Maybe (ConditionalSpecification String),
+      columnSpecificationReadOnly
+        :: Maybe (ConditionalSpecification Bool),
+      columnSpecificationConcretePathOf
+        :: Maybe (ConditionalSpecification String)
     }
 instance JSON.FromJSON ColumnSpecification where
   parseJSON (JSON.Object value) = do
@@ -276,8 +365,8 @@ instance JSON.FromJSON ColumnSpecification where
                         <*> value .:? "flags"
                         <*> value .:? "name"
                         <*> value .:? "type"
-                        <*> value .:? "role"
                         <*> value .:? "table_roles"
+                        <*> value .:? "role"
                         <*> value .:? "read_only"
                         <*> value .:? "concrete_path_of"
   parseJSON _ = mzero
@@ -292,10 +381,10 @@ instance JSON.ToJSON ColumnSpecification where
        $ columnSpecificationName column,
       maybe [] (\value -> ["type" .= JSON.toJSON value])
        $ columnSpecificationType column,
-      maybe [] (\value -> ["role" .= JSON.toJSON value])
-       $ columnSpecificationColumnRole column,
       maybe [] (\value -> ["table_roles" .= JSON.toJSON value])
        $ columnSpecificationTableRoles column,
+      maybe [] (\value -> ["role" .= JSON.toJSON value])
+       $ columnSpecificationColumnRole column,
       maybe [] (\value -> ["read_only" .= JSON.toJSON value])
        $ columnSpecificationReadOnly column,
       maybe [] (\value -> ["concrete_path_of" .= JSON.toJSON value])
@@ -362,8 +451,8 @@ instance Monoid ColumnSpecification where
 
 data KeyColumnSpecificationFlattened =
   KeyColumnSpecificationFlattened {
-      keyColumnSpecificationFlattenedName :: NameSpecification,
-      keyColumnSpecificationFlattenedType :: TypeSpecification,
+      keyColumnSpecificationFlattenedName :: NameSpecificationFlattened,
+      keyColumnSpecificationFlattenedType :: TypeSpecificationFlattened,
       keyColumnSpecificationFlattenedTableRoles :: Set String,
       keyColumnSpecificationFlattenedColumnRole :: String
     }
@@ -377,10 +466,74 @@ instance JSON.ToJSON KeyColumnSpecificationFlattened where
        "column_role" .= keyColumnSpecificationFlattenedColumnRole column]
 
 
+flattenKeyColumnSpecification
+  :: Set String
+  -> Map String ColumnSpecification
+  -> ColumnSpecification
+  -> Compilation KeyColumnSpecificationFlattened
+flattenKeyColumnSpecification allFlags templates column = do
+  let getRelevantTemplates column = do
+        case columnSpecificationTemplate column of
+          Nothing -> return [column]
+          Just templateName ->
+            case Map.lookup templateName templates of
+              Nothing -> return [column]
+              Just template -> do
+                rest <- getRelevantTemplates template
+                return $ column : rest
+  relevantTemplates <- getRelevantTemplates column >>= return . reverse
+  let flattened = mconcat relevantTemplates
+  name <- maybe (throwError "\"Name\" field undefined.")
+                return
+                (columnSpecificationName flattened)
+  type' <- maybe (throwError "\"Type\" field undefined.")
+                return
+                (columnSpecificationType flattened)
+  flags <- maybe (throwError "\"Flags\" field undefined.")
+                 return
+                 (columnSpecificationFlags flattened)
+  let presentFlags = Set.fromList $ map fst $ Map.toList flags
+      unknownFlags = Set.difference presentFlags allFlags
+  if not $ Set.null unknownFlags
+    then throwError $ "Unknown flags "
+                      ++ (intercalate ", " $ map show
+                           $ Set.toList unknownFlags)
+                      ++ "."
+    else return ()
+  let missingFlags = Set.difference allFlags presentFlags 
+  if not $ Set.null missingFlags
+    then throwError $ "Missing flags "
+                      ++ (intercalate ", " $ map show
+                           $ Set.toList missingFlags)
+                      ++ "."
+    else return ()
+  tableRoles <- maybe (throwError "\"Table roles\" field undefined.")
+                      return
+                      (columnSpecificationTableRoles flattened)
+  if Set.null tableRoles
+    then throwError "Column has no table roles."
+    else return ()
+  columnRole <- maybe (throwError "\"Column role\" field undefined.")
+                      return
+                      (columnSpecificationColumnRole flattened)
+  case columnSpecificationReadOnly flattened of
+    Nothing -> return ()
+    Just _ -> throwError "\"Read-only\" field defined on a key column."
+  case columnSpecificationConcretePathOf flattened of
+    Nothing -> return ()
+    Just _ -> throwError "\"Concrete-path-of\" field defined on a key column."
+  return $ KeyColumnSpecificationFlattened {
+               keyColumnSpecificationFlattenedName = name,
+               keyColumnSpecificationFlattenedType = type',
+               keyColumnSpecificationFlattenedTableRoles = tableRoles,
+               keyColumnSpecificationFlattenedColumnRole = columnRole
+             }
+
+
 data ColumnSpecificationFlattened =
   ColumnSpecificationFlattened {
-      columnSpecificationFlattenedName :: NameSpecification,
-      columnSpecificationFlattenedType :: TypeSpecification,
+      columnSpecificationFlattenedName :: NameSpecificationFlattened,
+      columnSpecificationFlattenedType :: TypeSpecificationFlattened,
       columnSpecificationFlattenedTableRoles :: Set String,
       columnSpecificationFlattenedColumnRole :: String,
       columnSpecificationFlattenedReadOnly :: Bool,
@@ -397,6 +550,70 @@ instance JSON.ToJSON ColumnSpecificationFlattened where
         "read_only" .= columnSpecificationFlattenedReadOnly column],
        maybe [] (\value -> ["concrete_path_of" .= value])
          (columnSpecificationFlattenedConcretePathOf column)]
+
+
+flattenColumnSpecification
+  :: Map String Bool
+  -> Set String
+  -> Map String ColumnSpecification
+  -> ColumnSpecification
+  -> Compilation ColumnSpecificationFlattened
+flattenColumnSpecification entityFlags allFlags templates column = do
+  let getRelevantTemplates column = do
+        case columnSpecificationTemplate column of
+          Nothing -> return [column]
+          Just templateName ->
+            case Map.lookup templateName templates of
+              Nothing -> return [column]
+              Just template -> do
+                rest <- getRelevantTemplates template
+                return $ column : rest
+  relevantTemplates <- getRelevantTemplates column >>= return . reverse
+  let flattened = mconcat relevantTemplates
+      flatten = flattenField flattened entityFlags
+  name <- flatten "name" columnSpecificationName flattenNameSpecification
+  type' <- flatten "type" columnSpecificationType flattenTypeSpecification
+  flags <- maybe (throwError "\"Flags\" field undefined.")
+                 return
+                 (columnSpecificationFlags flattened)
+  let presentFlags = Set.fromList $ map fst $ Map.toList flags
+      unknownFlags = Set.difference presentFlags allFlags
+  if not $ Set.null unknownFlags
+    then throwError $ "Unknown flags "
+                      ++ (intercalate ", " $ map show
+                           $ Set.toList unknownFlags)
+                      ++ "."
+    else return ()
+  let missingFlags = Set.difference allFlags presentFlags 
+  if not $ Set.null missingFlags
+    then throwError $ "Missing flags "
+                      ++ (intercalate ", " $ map show
+                           $ Set.toList missingFlags)
+                      ++ "."
+    else return ()
+  tableRoles <- maybe (throwError "\"Table roles\" field undefined.")
+                      return
+                      (columnSpecificationTableRoles flattened)
+  tableRolesFlattened <-
+    applyListFlags entityFlags tableRoles >>= return . Set.fromList
+  if Set.null tableRolesFlattened
+    then throwError "Column has no table roles."
+    else return ()
+  columnRole <- maybe (throwError "\"Column role\" field undefined.")
+                      return
+                      (columnSpecificationColumnRole flattened)
+  readOnly <- maybe (throwError "\"Read-only\" field undefined.")
+                    return
+                    (columnSpecificationReadOnly flattened)
+  let concretePathOf = columnSpecificationConcretePathOf flattened
+  return $ ColumnSpecificationFlattened {
+               columnSpecificationFlattenedName = name,
+               columnSpecificationFlattenedType = type',
+               columnSpecificationFlattenedTableRoles = tableRoles,
+               columnSpecificationFlattenedColumnRole = columnRole,
+               columnSpecificationFlattenedReadOnly = readOnly,
+               columnSpecificationFlattenedConcretePathOf = concretePathOf
+             }
 
 
 data ColumnRoleSpecification =
@@ -418,11 +635,12 @@ instance JSON.ToJSON ColumnRoleSpecification where
 
 data RelationSpecification =
   RelationSpecification {
-      relationSpecificationEntity :: String,
-      relationSpecificationPurpose :: Maybe String,
-      relationSpecificationRequired :: Bool,
-      relationSpecificationUnique :: Bool,
-      relationSpecificationKey :: Maybe [NameSpecification]
+      relationSpecificationEntity :: ConditionalSpecification String,
+      relationSpecificationPurpose :: Maybe (ConditionalSpecification String),
+      relationSpecificationRequired :: ConditionalSpecification Bool,
+      relationSpecificationUnique :: ConditionalSpecification Bool,
+      relationSpecificationKey
+        :: Maybe (ConditionalListSpecification NameSpecification)
     }
 instance JSON.FromJSON RelationSpecification where
   parseJSON (JSON.Object value) = do
@@ -451,7 +669,28 @@ instance JSON.ToJSON RelationSpecification where
        "unique" .= JSON.toJSON (relationSpecificationUnique relation)]
 
 
-data NameSpecification = NameSpecification [NameSpecificationPart]
+data RelationSpecificationFlattened =
+  RelationSpecificationFlattened {
+      relationSpecificationFlattenedEntity :: String,
+      relationSpecificationFlattenedPurpose :: Maybe String,
+      relationSpecificationFlattenedRequired :: Bool,
+      relationSpecificationFlattenedUnique :: Bool,
+      relationSpecificationFlattenedKey :: Maybe [NameSpecificationFlattened]
+    }
+instance JSON.ToJSON RelationSpecificationFlattened where
+  toJSON relation =
+    JSON.object
+      ["entity" .= JSON.toJSON (relationSpecificationFlattenedEntity relation),
+       "purpose" .= JSON.toJSON
+         (relationSpecificationFlattenedPurpose relation),
+       "required" .= JSON.toJSON
+         (relationSpecificationFlattenedRequired relation),
+       "unique" .= JSON.toJSON (relationSpecificationFlattenedUnique relation),
+       "key" .= JSON.toJSON (relationSpecificationFlattenedKey relation)]
+
+
+data NameSpecification =
+  NameSpecification (ConditionalListSpecification NameSpecificationPart)
 instance JSON.FromJSON NameSpecification where
   parseJSON (JSON.String text) =
     pure $ NameSpecification [LiteralNameSpecificationPart $ Text.unpack text]
@@ -460,6 +699,12 @@ instance JSON.FromJSON NameSpecification where
   parseJSON _ = mzero
 instance JSON.ToJSON NameSpecification where
   toJSON (NameSpecification parts) = JSON.toJSON parts
+
+
+data NameSpecificationFlattened =
+  NameSpecificationFlattened [NameSpecificationPart]
+instance JSON.ToJSON NameSpecificationFlattened where
+  toJSON (NameSpecificationFlattened parts) = JSON.toJSON parts
 
 
 data NameSpecificationPart
@@ -495,7 +740,9 @@ instance JSON.ToJSON NameSpecificationPart where
        "name" .= JSON.toJSON name]
 
 
-data TypeSpecification = TypeSpecification String [TypeSpecification]
+data TypeSpecification =
+  TypeSpecification (ConditionalSpecification String)
+                    (ConditionalListSpecification TypeSpecification)
 instance JSON.FromJSON TypeSpecification where
   parseJSON (JSON.String text) =
     pure $ TypeSpecification (Text.unpack text) []
@@ -512,6 +759,26 @@ instance JSON.ToJSON TypeSpecification where
     let parameters' =
           fromJust $ JSON.parseMaybe JSON.parseJSON (JSON.toJSON parameters)
     in JSON.toJSON (constructor : parameters')
+
+
+data TypeSpecificationFlattened =
+  TypeSpecificationFlattened String [TypeSpecificationFlattened]
+instance JSON.ToJSON TypeSpecificationFlattened where
+  toJSON (TypeSpecificationFlattened constructor parameters) =
+    let parameters' =
+          fromJust $ JSON.parseMaybe JSON.parseJSON (JSON.toJSON parameters)
+    in JSON.toJSON (constructor : parameters')
+
+
+flattenTypeSpecification
+  :: Map String Bool
+  -> TypeSpecification
+  -> Compilation TypeSpecificationFlattened
+flattenTypeSpecification flags (TypeSpecification constructor parameters) = do
+  constructor <- applyFlags flags constructor
+  parameters <- applyListFlags flags parameters
+  parameters <- mapM (flattenTypeSpecification flags) parameters
+  return $ TypeSpecificationFlattened constructor parameters
 
 
 data ConditionalSpecification content =
@@ -535,6 +802,23 @@ instance (JSON.ToJSON content)
   toJSON conditional = do
     JSON.toJSON (JSON.String "case",
                  conditionalSpecificationConditions conditional)
+
+
+applyFlags
+  :: Map String Bool
+  -> ConditionalSpecification content
+  -> Compilation (Maybe content)
+applyFlags flags specification = do
+  foldM (\maybeResult (condition, content) -> do
+           case maybeResult of
+             Just _ -> maybeResult
+             Nothing -> do
+               applicable <- testCondition flags condition
+               if applicable
+                 then return $ Just content
+                 else return Nothing)
+        Nothing
+        (conditionalSpecificationConditions specification)
 
 
 data ConditionalListSpecification content =
@@ -566,6 +850,75 @@ instance (JSON.ToJSON content)
                                        : JSON.toJSON condition
                                        : map JSON.toJSON items))
                       (conditionalListSpecificationItems conditional)
+
+
+applyListFlags
+  :: Map String Bool
+  -> ConditionalListSpecification content
+  -> Compilation [content]
+applyListFlags flags specification = do
+  foldM (\soFar (condition, content) -> do
+           applicable <- testCondition flags condition
+           if applicable
+             then return $ soFar ++ content
+             else return soFar)
+        []
+        (conditionalListSpecificationItems specification)
+
+
+data ConditionalMapSpecification key content =
+  ConditionalMapSpecification {
+      conditionalMapSpecificationItems :: Map key [(Condition, content)]
+    }
+instance (JSON.FromJSON key, JSON.FromJSON content)
+         => JSON.FromJSON (ConditionalMapSpecification key content) where
+  parseJSON value@(JSON.Object _) = do
+    items <- JSON.parseJSON value
+             >>= mapM (\(key, item) ->
+                          case item of
+                            (JSON.String case' : conditions)
+                              | case' == "case" -> do
+                                  conditions <- mapM JSON.parseJSON conditions
+                                  return (key, conditions)
+                            _ -> do
+                              plain <- JSON.parseJSON item
+                              return (key, [(DefaultCondition, plain)]))
+                 . Map.toList
+             >>= return . Map.fromList
+    return $ ConditionalMapSpecification {
+                 conditionalMapSpecificationItems = items
+               }
+  parseJSON _ = mzero
+instance (JSON.ToJSON key, JSON.ToJSON content)
+         => JSON.ToJSON (ConditionalMapSpecification key content) where
+  toJSON conditional =
+    JSON.toJSON $ Map.fromList
+      $ map (\(key, value) -> (key, (JSON.String "case", value)))
+            (conditionalMapSpecificationItems conditional)
+
+
+applyMapFlags
+  :: Map String Bool
+  -> ConditionalMapSpecification key content
+  -> Compilation (Map key content)
+applyMapFlags flags specification = do
+  foldM (\mapSoFar (key, conditions) -> do
+           maybeValue <-
+             foldM (\valueSoFar (condition, value) ->
+                      case valueSoFar of
+                        Just _ -> valueSoFar
+                        Nothing -> do
+                          applicable <- testCondition flags condition
+                          if applicable
+                            then return $ Just value
+                            else return Nothing)
+                   Nothing
+                   conditions
+           case maybeValue of
+             Just value -> return $ Map.insert key value mapSoFar
+             Nothing -> return mapSoFar)
+        Map.empty
+        (Map.toList $ conditionalMapSpecificationItems specification)
 
 
 data Condition
@@ -601,10 +954,28 @@ instance JSON.ToJSON Condition where
     JSON.String "default"
 
 
+testCondition
+  :: Map String Bool
+  -> Condition
+  -> Compilation Bool
+testCondition _ DefaultCondition = return True
+testCondition flags condition = do
+  foldM (\result (flag, expected) -> do
+           if not result
+             then return False
+             else do
+               case Map.lookup flag flags of
+                 Nothing -> throwError $ "Flag \"" ++ flag
+                                         ++ "\" referenced but not defined."
+                 Just actual -> return $ expected == actual)
+        True
+        (Map.toList $ conditionFlags condition)
+
+
 data TableRole =
   TableRole {
       tableRoleName :: String,
-      tableRoleTableName :: NameSpecification
+      tableRoleTableName :: NameSpecificationFlattened
     }
 instance JSON.ToJSON TableRole where
   toJSON tableRole =
@@ -640,15 +1011,17 @@ instance JSON.ToJSON Table where
 data Column =
   Column {
       columnName :: String,
-      columnType :: TypeSpecification,
-      columnReadOnly :: Bool
+      columnType :: TypeSpecificationFlattened,
+      columnReadOnly :: Bool,
+      columnConcretePathOf :: Maybe String
     }
 instance JSON.ToJSON Column where
   toJSON column =
     JSON.object
       ["name" .= JSON.toJSON (columnName column),
        "type" .= JSON.toJSON (columnType column),
-       "read_only" .= JSON.toJSON (columnReadOnly column)]
+       "read_only" .= JSON.toJSON (columnReadOnly column),
+       "concrete_path_of" .= JSON.toJSON (columnConcretePathOf column)]
 
 
 data PreEntity =
@@ -675,8 +1048,8 @@ instance JSON.ToJSON PreEntity where
 
 data PreColumn =
   PreColumn {
-      preColumnName :: NameSpecification,
-      preColumnType :: TypeSpecification,
+      preColumnName :: NameSpecificationFlattened,
+      preColumnType :: TypeSpecificationFlattened,
       preColumnReadOnly :: Bool,
       preColumnTableRoles :: Set String,
       preColumnRole :: ColumnRole,
@@ -705,16 +1078,49 @@ instance JSON.ToJSON ColumnRole where
       "priority" .= (JSON.toJSON $ columnRolePriority columnRole)]
 
 
+data SubcolumnSpecification =
+  SubcolumnSpecification {
+      subcolumnSpecificationName :: ConditionalSpecification NameSpecification,
+      subcolumnSpecificationType :: ConditionalSpecification PrimitiveType
+    }
+instance JSON.ToJSON SubcolumnSpecification where
+  toJSON subcolumn =
+    JSON.object
+      ["name" .= JSON.toJSON (subcolumnSpecificationName subcolumn),
+       "type" .= JSON.toJSON
+         (show $ SQL.showTokens $ subcolumnSpecificationType subcolumn)]
+
+
 data Subcolumn =
   Subcolumn {
-      subcolumnName :: NameSpecification,
-      subcolumnType :: SQL.Type
+      subcolumnName :: NameSpecificationFlattened,
+      subcolumnType :: PrimitiveType
     }
 instance JSON.ToJSON Subcolumn where
   toJSON subcolumn =
     JSON.object
       ["name" .= JSON.toJSON (subcolumnName subcolumn),
        "type" .= JSON.toJSON (show $ SQL.showTokens $ subcolumnType subcolumn)]
+
+
+data PrimitiveType
+  = IntegerPrimitiveType
+  | NumericPrimitiveType
+  | BlobPrimitiveType
+  | TextPrimitiveType
+instance JSON.FromJSON PrimitiveType where
+  parseJSON (JSON.String text)
+    | text == "integer" = pure IntegerPrimitiveType
+    | text == "numeric" = pure NumericPrimitiveType
+    | text == "blob" = pure BlobPrimitiveType
+    | text == "text" = pure TextPrimitiveType
+    | otherwise = mzero
+  parseJSON _ = mzero
+instance JSON.ToJSON PrimitiveType where
+  toJSON IntegerPrimitiveType = JSON.String "integer"
+  toJSON NumericPrimitiveType = JSON.String "numeric"
+  toJSON BlobPrimitiveType = JSON.String "blob"
+  toJSON TextPrimitiveType = JSON.String "text"
 
 
 class Type type' where
@@ -731,10 +1137,10 @@ instance Type UUIDType where
          subcolumnName =
            NameSpecification [VariableNameSpecificationPart "column"],
          subcolumnType =
-           SQL.Type SQL.TypeAffinityNone
-                    (SQL.TypeName $ fromJust $ SQL.mkOneOrMore
-                    [SQL.UnqualifiedIdentifier "blob"])
-                    SQL.NoTypeSize
+          ConditionalSpecification {
+              conditionalSpecificationConditions =
+                [(DefaultCondition, BlobPrimitiveType)]
+            }
        }]
 
 
@@ -745,10 +1151,10 @@ instance Type TimestampType where
          subcolumnName =
            NameSpecification [VariableNameSpecificationPart "column"],
          subcolumnType =
-           SQL.Type SQL.TypeAffinityNone
-                    (SQL.TypeName $ fromJust $ SQL.mkOneOrMore
-                    [SQL.UnqualifiedIdentifier "integer"])
-                    SQL.NoTypeSize
+          ConditionalSpecification {
+              conditionalSpecificationConditions =
+                [(DefaultCondition, IntegerPrimitiveType)]
+            }
        }]
 
 
@@ -759,10 +1165,10 @@ instance Type EmailType where
         subcolumnName =
           NameSpecification [VariableNameSpecificationPart "column"],
         subcolumnType =
-          SQL.Type SQL.TypeAffinityNone
-                   (SQL.TypeName $ fromJust $ SQL.mkOneOrMore
-                   [SQL.UnqualifiedIdentifier "text"])
-                   SQL.NoTypeSize
+          ConditionalSpecification {
+              conditionalSpecificationConditions =
+                [(DefaultCondition, TextPrimitiveType)]
+            }
       }]
 
 
@@ -799,7 +1205,7 @@ runCompilation (Compilation action) =
 
 compile :: Schema -> Either String D.Schema
 compile schema = runCompilation $ do
-  tableRoles <- compileTableRoles (schemaTableRoles schema)
+  tableRoles <- compileTableRoles Map.empty (schemaTableRoles schema)
   columnRoles <- compileColumnRoles (schemaColumnRoles schema)
   entities <- compileEntities tableRoles
                               columnRoles
@@ -819,19 +1225,28 @@ compile schema = runCompilation $ do
 
 
 compileTableRoles
-  :: Map String TableRoleSpecification
+  :: Map String Bool
+  -> Map String TableRoleSpecification
   -> Compilation (Map String TableRole)
-compileTableRoles tableRoles = do
+compileTableRoles flags tableRoles = do
   mapM (\(name, tableRole) -> do
-           tableRole <- compileTableRole name tableRole
+           tableRole <- compileTableRole flags name tableRole
            return (name, tableRole))
        (Map.toList tableRoles)
   >>= return . Map.fromList
 
 
-compileTableRole :: String -> TableRoleSpecification -> Compilation TableRole
-compileTableRole name tableRole = do
-  let tableName = tableRoleSpecificationName tableRole
+compileTableRole
+  :: Map String Bool
+  -> String
+  -> TableRoleSpecification
+  -> Compilation TableRole
+compileTableRole flags name tableRole = do
+  tableName <-
+    flattenField tableRole flags
+                 "name"
+                 (Just . tableRoleSpecificationName)
+                 flattenNameSpecification
   return $ TableRole {
                tableRoleName = name,
                tableRoleTableName = tableName
@@ -1016,206 +1431,19 @@ compileEntity preEntity preEntities = do
              }
 
 
-flattenEntitySpecification
-  :: Set String
-  -> Map String EntitySpecification
-  -> Set String
-  -> Map String ColumnSpecification
-  -> EntitySpecification
-  -> Compilation EntitySpecificationFlattened
-flattenEntitySpecification
-    allFlags templates allColumnFlags columnTemplates entity = do
-  let getRelevantTemplates entity = do
-        case entitySpecificationTemplate entity of
-          Nothing -> return [entity]
-          Just templateName ->
-            case Map.lookup templateName templates of
-              Nothing -> return [entity]
-              Just template -> do
-                rest <- getRelevantTemplates template
-                return $ entity : rest
-  relevantTemplates <- getRelevantTemplates entity >>= return . reverse
-  let flattened = mconcat relevantTemplates
-  flags <- maybe (throwError "\"Flags\" field undefined.")
-                 return
-                 (entitySpecificationFlags flattened)
-  let presentFlags = Set.fromList $ map fst $ Map.toList flags
-      unknownFlags = Set.difference presentFlags allFlags
-  if not $ Set.null unknownFlags
-    then throwError $ "Unknown flags "
-                      ++ (intercalate ", " $ map show
-                           $ Set.toList unknownFlags)
-                      ++ "."
-    else return ()
-  let missingFlags = Set.difference allFlags presentFlags 
-  if not $ Set.null missingFlags
-    then throwError $ "Missing flags "
-                      ++ (intercalate ", " $ map show
-                           $ Set.toList missingFlags)
-                      ++ "."
-    else return ()
-  tables <- maybe (throwError "\"Tables\" field undefined.")
-                  return
-                  (entitySpecificationTables flattened)
-  if null tables
-    then throwError "Entity has no tables."
-    else return ()
-  key <- maybe (throwError "\"Key\" field undefined.")
-               return
-               (entitySpecificationKey flattened)
-  key <-
-    mapM (flattenKeyColumnSpecification allColumnFlags columnTemplates)
-          key
-  columns <- maybe (throwError "\"Columns\" field undefined.")
-                   return
-                   (entitySpecificationColumns flattened)
-  columns <-
-    mapM (flattenColumnSpecification allColumnFlags columnTemplates)
-         columns
-  relations <- maybe (throwError "\"Relations\" field undefined.")
-                     return
-                     (entitySpecificationRelations flattened)
-  return $ EntitySpecificationFlattened {
-               entitySpecificationFlattenedFlags = flags,
-               entitySpecificationFlattenedTables = tables,
-               entitySpecificationFlattenedKey = key,
-               entitySpecificationFlattenedColumns = columns,
-               entitySpecificationFlattenedRelations = relations
-            }
-
-
-flattenKeyColumnSpecification
-  :: Set String
-  -> Map String ColumnSpecification
-  -> ColumnSpecification
-  -> Compilation KeyColumnSpecificationFlattened
-flattenKeyColumnSpecification allFlags templates column = do
-  let getRelevantTemplates column = do
-        case columnSpecificationTemplate column of
-          Nothing -> return [column]
-          Just templateName ->
-            case Map.lookup templateName templates of
-              Nothing -> return [column]
-              Just template -> do
-                rest <- getRelevantTemplates template
-                return $ column : rest
-  relevantTemplates <- getRelevantTemplates column >>= return . reverse
-  let flattened = mconcat relevantTemplates
-  name <- maybe (throwError "\"Name\" field undefined.")
-                return
-                (columnSpecificationName flattened)
-  type' <- maybe (throwError "\"Type\" field undefined.")
-                return
-                (columnSpecificationType flattened)
-  flags <- maybe (throwError "\"Flags\" field undefined.")
-                 return
-                 (columnSpecificationFlags flattened)
-  let presentFlags = Set.fromList $ map fst $ Map.toList flags
-      unknownFlags = Set.difference presentFlags allFlags
-  if not $ Set.null unknownFlags
-    then throwError $ "Unknown flags "
-                      ++ (intercalate ", " $ map show
-                           $ Set.toList unknownFlags)
-                      ++ "."
-    else return ()
-  let missingFlags = Set.difference allFlags presentFlags 
-  if not $ Set.null missingFlags
-    then throwError $ "Missing flags "
-                      ++ (intercalate ", " $ map show
-                           $ Set.toList missingFlags)
-                      ++ "."
-    else return ()
-  tableRoles <- maybe (throwError "\"Table roles\" field undefined.")
-                      return
-                      (columnSpecificationTableRoles flattened)
-  if Set.null tableRoles
-    then throwError "Column has no table roles."
-    else return ()
-  columnRole <- maybe (throwError "\"Column role\" field undefined.")
-                      return
-                      (columnSpecificationColumnRole flattened)
-  case columnSpecificationReadOnly flattened of
-    Nothing -> return ()
-    Just _ -> throwError "\"Read-only\" field defined on a key column."
-  case columnSpecificationConcretePathOf flattened of
-    Nothing -> return ()
-    Just _ -> throwError "\"Concrete-path-of\" field defined on a key column."
-  return $ KeyColumnSpecificationFlattened {
-               keyColumnSpecificationFlattenedName = name,
-               keyColumnSpecificationFlattenedType = type',
-               keyColumnSpecificationFlattenedTableRoles = tableRoles,
-               keyColumnSpecificationFlattenedColumnRole = columnRole
-             }
-
-
-flattenColumnSpecification
-  :: Set String
-  -> Map String ColumnSpecification
-  -> ColumnSpecification
-  -> Compilation ColumnSpecificationFlattened
-flattenColumnSpecification allFlags templates column = do
-  let getRelevantTemplates column = do
-        case columnSpecificationTemplate column of
-          Nothing -> return [column]
-          Just templateName ->
-            case Map.lookup templateName templates of
-              Nothing -> return [column]
-              Just template -> do
-                rest <- getRelevantTemplates template
-                return $ column : rest
-  relevantTemplates <- getRelevantTemplates column >>= return . reverse
-  let flattened = mconcat relevantTemplates
-  name <- maybe (throwError "\"Name\" field undefined.")
-                return
-                (columnSpecificationName flattened)
-  type' <- maybe (throwError "\"Type\" field undefined.")
-                return
-                (columnSpecificationType flattened)
-  flags <- maybe (throwError "\"Flags\" field undefined.")
-                 return
-                 (columnSpecificationFlags flattened)
-  let presentFlags = Set.fromList $ map fst $ Map.toList flags
-      unknownFlags = Set.difference presentFlags allFlags
-  if not $ Set.null unknownFlags
-    then throwError $ "Unknown flags "
-                      ++ (intercalate ", " $ map show
-                           $ Set.toList unknownFlags)
-                      ++ "."
-    else return ()
-  let missingFlags = Set.difference allFlags presentFlags 
-  if not $ Set.null missingFlags
-    then throwError $ "Missing flags "
-                      ++ (intercalate ", " $ map show
-                           $ Set.toList missingFlags)
-                      ++ "."
-    else return ()
-  tableRoles <- maybe (throwError "\"Table roles\" field undefined.")
-                      return
-                      (columnSpecificationTableRoles flattened)
-  if Set.null tableRoles
-    then throwError "Column has no table roles."
-    else return ()
-  columnRole <- maybe (throwError "\"Column role\" field undefined.")
-                      return
-                      (columnSpecificationColumnRole flattened)
-  readOnly <- maybe (throwError "\"Read-only\" field undefined.")
-                    return
-                    (columnSpecificationReadOnly flattened)
-  let concretePathOf = columnSpecificationConcretePathOf flattened
-  return $ ColumnSpecificationFlattened {
-               columnSpecificationFlattenedName = name,
-               columnSpecificationFlattenedType = type',
-               columnSpecificationFlattenedTableRoles = tableRoles,
-               columnSpecificationFlattenedColumnRole = columnRole,
-               columnSpecificationFlattenedReadOnly = readOnly,
-               columnSpecificationFlattenedConcretePathOf = concretePathOf
-             }
+flattenNameSpecification
+  :: Map String Bool
+  -> NameSpecification
+  -> Compilation NameSpecificationFlattened
+flattenNameSpecification flags (NameSpecification parts) = do
+  applyListFlags flags parts
+  >>= return . NameSpecificationFlattened
 
 
 finalizeNameSpecification
-  :: NameSpecification
+  :: NameSpecificationFlattened
   -> Compilation String
-finalizeNameSpecification (NameSpecification parts) = do
+finalizeNameSpecification (NameSpecificationFlattened parts) = do
   mapM (\part ->
           case part of
             LiteralNameSpecificationPart literal -> return literal
@@ -1228,9 +1456,9 @@ finalizeNameSpecification (NameSpecification parts) = do
 
 substituteNameSpecification
   :: Map String String
-  -> NameSpecification
-  -> Compilation NameSpecification
-substituteNameSpecification bindings (NameSpecification parts) = do
+  -> NameSpecificationFlattened
+  -> Compilation NameSpecificationFlattened
+substituteNameSpecification bindings (NameSpecificationFlattened parts) = do
   parts <- mapM (\part -> do
                    case part of
                      VariableNameSpecificationPart variable -> do
@@ -1240,7 +1468,26 @@ substituteNameSpecification bindings (NameSpecification parts) = do
                            return $ LiteralNameSpecificationPart value
                      _ -> return part)
                 parts
-  return $ NameSpecification parts
+  return $ NameSpecificationFlattened parts
+
+
+flattenField
+  :: object
+  -> Map String Bool
+  -> String
+  -> (object -> Maybe (ConditionalSpecification field))
+  -> (Map String Bool -> field -> Compilation flattened)
+  -> Compilation flattened
+flattenField object flags field accessor flattener = do
+  case accessor object of
+    Nothing -> throwError $ "Field \"" ++ field ++ "\" undefined."
+    Just value -> do
+      maybeValue <- applyFlags flags value
+      case maybeValue of
+        Nothing ->
+          throwError $ "Field \"" ++ field
+                       ++ "\" defined, but not for this combination of flags."
+        Just value -> flattener flags value
 
 
 compileTable :: Table -> Compilation SQL.CreateTable
@@ -1265,23 +1512,46 @@ compileColumn column = do
                     (Map.fromList [("column", columnName column)])
                     (subcolumnName subcolumn)
                   >>= finalizeNameSpecification
+          type' <- compilePrimitiveType $ subcolumnType subcolumn
           return $ SQL.ColumnDefinition
                      (SQL.UnqualifiedIdentifier name)
-                     (SQL.JustType $ subcolumnType subcolumn)
+                     (SQL.JustType type')
                      [])
        (typeSubcolumns type')
 
 
-compileType :: TypeSpecification -> Compilation AnyType
-compileType (TypeSpecification "timestamp" []) = do
+compileType :: TypeSpecificationFlattened -> Compilation AnyType
+compileType (TypeSpecificationFlattened "timestamp" []) = do
   return $ AnyType TimestampType
-compileType (TypeSpecification "uuid" []) = do
+compileType (TypeSpecificationFlattened "uuid" []) = do
   return $ AnyType UUIDType
-compileType (TypeSpecification "email" []) = do
+compileType (TypeSpecificationFlattened "email" []) = do
   return $ AnyType EmailType
-compileType (TypeSpecification "maybe" [subtype]) = do
+compileType (TypeSpecificationFlattened "maybe" [subtype]) = do
   subtype <- compileType subtype
   return $ AnyType (MaybeType subtype)
-compileType (TypeSpecification name _) = do
+compileType (TypeSpecificationFlattened name _) = do
   throwError $ "Unknown type \"" ++ name ++ "\"."
 
+
+compilePrimitiveType :: PrimitiveType -> Compilation SQL.Type
+compilePrimitiveType IntegerPrimitiveType =
+  return $ SQL.Type SQL.TypeAffinityNone
+                    (SQL.TypeName $ fromJust $ SQL.mkOneOrMore
+                      [SQL.UnqualifiedIdentifier "integer"])
+                    SQL.NoTypeSize
+compilePrimitiveType NumericPrimitiveType =
+  return $ SQL.Type SQL.TypeAffinityNone
+                    (SQL.TypeName $ fromJust $ SQL.mkOneOrMore
+                      [SQL.UnqualifiedIdentifier "numeric"])
+                    SQL.NoTypeSize
+compilePrimitiveType BlobPrimitiveType =
+  return $ SQL.Type SQL.TypeAffinityNone
+                    (SQL.TypeName $ fromJust $ SQL.mkOneOrMore
+                      [SQL.UnqualifiedIdentifier "blob"])
+                    SQL.NoTypeSize
+compilePrimitiveType TextPrimitiveType =
+  return $ SQL.Type SQL.TypeAffinityNone
+                    (SQL.TypeName $ fromJust $ SQL.mkOneOrMore
+                      [SQL.UnqualifiedIdentifier "text"])
+                    SQL.NoTypeSize

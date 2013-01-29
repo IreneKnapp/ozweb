@@ -39,6 +39,38 @@
       "priority": 1
     }
   },
+  
+  "types": {
+    "uuid": {
+      "subcolumns": [{
+        "name": [{
+          "type": "variable",
+          "name": "column"
+        }],
+        "type": "blob"
+    },
+    "timestamp": {
+      "subcolumns": [{
+        "name": [{
+          "type": "variable",
+          "name": "column"
+        }],
+        "type": "integer"
+    },
+    "email": {
+      "subcolumns": [{
+        "name": [{
+          "type": "variable",
+          "name": "column"
+        }],
+        "type": "text"
+      }]
+    },
+    "maybe": {
+      "parameters": ["subtype"],
+      "subcolumns": ["apply", "subcolumns", ["variable", "subtype"]]
+    }
+  },
 
   "column_templates": {
     "key": {
