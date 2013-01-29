@@ -68,7 +68,7 @@
     },
     "maybe": {
       "parameters": ["subtype"],
-      "subcolumns": ["apply", "subcolumns", ["variable", "subtype"]]
+      "subcolumns": ["expression", ["subcolumns", ["variable", "subtype"]]]
     }
   },
 
