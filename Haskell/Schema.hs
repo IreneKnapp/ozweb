@@ -1,13 +1,7 @@
 {-# LANGUAGE OverloadedStrings, ExistentialQuantification,
              FlexibleInstances #-}
 module Schema
-  (Schema(..),
-   EntitySpecification(..),
-   ColumnSpecification(..),
-   RelationSpecification(..),
-   NameSpecification(..),
-   NameSpecificationPart(..),
-   TypeSpecification(..),
+  (Schema,
    compile)
   where
 
@@ -336,11 +330,11 @@ data ColumnSpecification =
       columnSpecificationTemplate
         :: Maybe (ConditionalSpecification String),
       columnSpecificationFlags
-        :: Maybe (ConditionalMapSpecification String Bool),
+        :: Maybe (ConditionalMapSpecification Bool),
       columnSpecificationName
         :: Maybe (ConditionalSpecification NameSpecification),
       columnSpecificationType
-        :: Maybe (ConditionalSpecification TypeSpecification),
+        :: Maybe (ConditionalSpecification TypeReferenceSpecification),
       columnSpecificationTableRoles
         :: Maybe (ConditionalListSpecification String),
       columnSpecificationColumnRole
@@ -452,7 +446,8 @@ instance Monoid ColumnSpecification where
 data KeyColumnSpecificationFlattened =
   KeyColumnSpecificationFlattened {
       keyColumnSpecificationFlattenedName :: NameSpecificationFlattened,
-      keyColumnSpecificationFlattenedType :: TypeSpecificationFlattened,
+      keyColumnSpecificationFlattenedType
+        :: TypeReferenceSpecificationFlattened,
       keyColumnSpecificationFlattenedTableRoles :: Set String,
       keyColumnSpecificationFlattenedColumnRole :: String
     }
@@ -533,7 +528,7 @@ flattenKeyColumnSpecification allFlags templates column = do
 data ColumnSpecificationFlattened =
   ColumnSpecificationFlattened {
       columnSpecificationFlattenedName :: NameSpecificationFlattened,
-      columnSpecificationFlattenedType :: TypeSpecificationFlattened,
+      columnSpecificationFlattenedType :: TypeReferenceSpecificationFlattened,
       columnSpecificationFlattenedTableRoles :: Set String,
       columnSpecificationFlattenedColumnRole :: String,
       columnSpecificationFlattenedReadOnly :: Bool,
@@ -572,7 +567,8 @@ flattenColumnSpecification entityFlags allFlags templates column = do
   let flattened = mconcat relevantTemplates
       flatten = flattenField flattened entityFlags
   name <- flatten "name" columnSpecificationName flattenNameSpecification
-  type' <- flatten "type" columnSpecificationType flattenTypeSpecification
+  type' <- flatten "type" columnSpecificationType
+                   flattenTypeReferenceSpecification
   flags <- maybe (throwError "\"Flags\" field undefined.")
                  return
                  (columnSpecificationFlags flattened)
@@ -740,45 +736,156 @@ instance JSON.ToJSON NameSpecificationPart where
        "name" .= JSON.toJSON name]
 
 
-data TypeSpecification =
-  TypeSpecification (ConditionalSpecification String)
-                    (ConditionalListSpecification TypeSpecification)
-instance JSON.FromJSON TypeSpecification where
+data TypeReferenceSpecification =
+  TypeReferenceSpecification
+    (ConditionalSpecification String)
+    (ConditionalListSpecification TypeReferenceSpecification)
+instance JSON.FromJSON TypeReferenceSpecification where
   parseJSON (JSON.String text) =
-    pure $ TypeSpecification (Text.unpack text) []
+    pure $ TypeReferenceSpecification (Text.unpack text) []
   parseJSON items@(JSON.Array _) = do
     items <- JSON.parseJSON items
     case items of
       (constructor : parameters) -> do
         parameters <- JSON.parseJSON $ JSON.toJSON parameters
-        return $ TypeSpecification constructor parameters
+        return $ TypeReferenceSpecification constructor parameters
       _ -> mzero
   parseJSON _ = mzero
-instance JSON.ToJSON TypeSpecification where
-  toJSON (TypeSpecification constructor parameters) =
+instance JSON.ToJSON TypeReferenceSpecification where
+  toJSON (TypeReferenceSpecification constructor parameters) =
     let parameters' =
           fromJust $ JSON.parseMaybe JSON.parseJSON (JSON.toJSON parameters)
     in JSON.toJSON (constructor : parameters')
+
+
+data TypeReferenceSpecificationFlattened =
+  TypeReferenceSpecificationFlattened
+    String [TypeReferenceSpecificationFlattened]
+instance JSON.ToJSON TypeReferenceSpecificationFlattened where
+  toJSON (TypeReferenceSpecificationFlattened constructor parameters) =
+    let parameters' =
+          fromJust $ JSON.parseMaybe JSON.parseJSON (JSON.toJSON parameters)
+    in JSON.toJSON (constructor : parameters')
+
+
+flattenTypeReferenceSpecification
+  :: Map String Bool
+  -> TypeReferenceSpecification
+  -> Compilation TypeReferenceSpecificationFlattened
+flattenTypeReferenceSpecification
+    flags (TypeReferenceSpecification constructor parameters) = do
+  constructor <- applyFlags flags constructor
+  parameters <- applyListFlags flags parameters
+  parameters <- mapM (flattenTypeReferenceSpecification flags) parameters
+  return $ TypeReferenceSpecificationFlattened constructor parameters
+
+
+data TypeSpecification =
+  TypeSpecification {
+      typeSpecificationParameters
+        :: Maybe (ConditionalListSpecification String),
+      typeSpecificationSubcolumns
+        :: Maybe (ConditionalListSpecification SubcolumnSpecification)
+    }
+instance JSON.FromJSON TypeSpecification where
+  parseJSON (JSON.Object value) = do
+    checkAllowedKeys ["parameters",
+                      "subcolumns"]
+                     value
+    TypeSpecification <$> value .:? "parameters"
+                      <*> value .:? "subcolumns"
+  parseJSON _ = mzero
+instance JSON.ToJSON TypeSpecification where
+  toJSON specification =
+    JSON.object $ concat
+     [maybe [] (\value -> ["parameters" .= JSON.toJSON value])
+        (typeSpecificationParameters specification),
+      maybe [] (\value -> ["subcolumns" .= (JSON.toJSON $
+        typeSpecificationSubcolumns specification)])]
 
 
 data TypeSpecificationFlattened =
-  TypeSpecificationFlattened String [TypeSpecificationFlattened]
+  TypeSpecificationFlattened {
+      typeSpecificationFlattenedParameters :: [String],
+      typeSpecificationFlattenedSubcolumns :: [SubcolumnSpecification]
+    }
 instance JSON.ToJSON TypeSpecificationFlattened where
-  toJSON (TypeSpecificationFlattened constructor parameters) =
-    let parameters' =
-          fromJust $ JSON.parseMaybe JSON.parseJSON (JSON.toJSON parameters)
-    in JSON.toJSON (constructor : parameters')
+  toJSON specification =
+    JSON.object
+      ["parameters" .= (JSON.toJSON $
+         typeSpecificationFlattenedParameters specification),
+       "subcolumns" .= (JSON.toJSON $
+         typeSpecificationFlattenedSubcolumns specification)]
 
 
 flattenTypeSpecification
   :: Map String Bool
   -> TypeSpecification
   -> Compilation TypeSpecificationFlattened
-flattenTypeSpecification flags (TypeSpecification constructor parameters) = do
-  constructor <- applyFlags flags constructor
-  parameters <- applyListFlags flags parameters
-  parameters <- mapM (flattenTypeSpecification flags) parameters
-  return $ TypeSpecificationFlattened constructor parameters
+flattenTypeSpecification flags specification = do
+  let flatten = flattenField specification flags
+      flattenList = flattenListField specification flags
+  parameters <- flatten "parameters" typeSpecificationParameters
+                         (\flags value -> return value)
+  subcolumns <- flattenList "subcolumns" typeSpecificationSubcolumns
+                            flattenSubcolumnSpecification
+  return $ TypeSpecificationFlattened {
+               typeSpecificationFlattenedParameters = parameters,
+               typeSpecificationFlattenedSubcolumns = subcolumns
+             }
+
+
+data SubcolumnSpecification =
+  SubcolumnSpecification {
+      subcolumnSpecificationName
+        :: Maybe (ConditionalSpecification NameSpecification),
+      subcolumnSpecificationType
+        :: Maybe (ConditionalSpecification PrimitiveType)
+    }
+instance JSON.FromJSON SubcolumnSpecification where
+  parseJSON (JSON.Object value) = do
+    checkAllowedKeys ["name",
+                      "type"]
+                     value
+    SubcolumnSpecification <$> value .:? "name"
+                           <*> value .:? "type"
+  parseJSON _ = mzero
+instance JSON.ToJSON SubcolumnSpecification where
+  toJSON specification =
+    JSON.object $ concat
+     [maybe [] (\value -> ["name" .= JSON.toJSON value])
+        (subcolumnSpecificationName specification),
+      maybe [] (\value -> ["name" .= JSON.toJSON value])
+        (subcolumnSpecificationName specification)]
+
+
+data SubcolumnSpecificationFlattened =
+  SubcolumnSpecificationFlattened {
+      subcolumnSpecificationFlattenedName :: NameSpecificationFlattened,
+      subcolumnSpecificationFlattenedType :: PrimitiveType
+    }
+instance JSON.ToJSON SubcolumnSpecificationFlattened where
+  toJSON specification =
+    JSON.object
+      ["name" .= (JSON.toJSON $
+         subcolumnSpecificationFlattenedName specification),
+       "type" .= (JSON.toJSON $
+         subcolumnSpecificationFlattenedType specification)]
+
+
+flattenSubcolumnSpecification
+  :: Map String Bool
+  -> SubcolumnSpecification
+  -> Compilation SubcolumnSpecificationFlattened
+flattenSubcolumnSpecification flags specification = do
+  let flatten = flattenField specification flags
+  name <- flatten "name" subcolumnSpecificationName flattenNameSpecification
+  type' <- flatten "type" subcolumnSpecificationType
+                   (\flags value -> return value)
+  return $ SubcolumnSpecificationFlattened {
+               subcolumnSpecificationFlattenedName = name,
+               subcolumnSpecificationFlattenedType = type'
+             }
 
 
 data ConditionalSpecification content =
@@ -811,7 +918,7 @@ applyFlags
 applyFlags flags specification = do
   foldM (\maybeResult (condition, content) -> do
            case maybeResult of
-             Just _ -> maybeResult
+             Just _ -> return maybeResult
              Nothing -> do
                applicable <- testCondition flags condition
                if applicable
@@ -866,22 +973,23 @@ applyListFlags flags specification = do
         (conditionalListSpecificationItems specification)
 
 
-data ConditionalMapSpecification key content =
+data ConditionalMapSpecification content =
   ConditionalMapSpecification {
-      conditionalMapSpecificationItems :: Map key [(Condition, content)]
+      conditionalMapSpecificationItems :: Map String [(Condition, content)]
     }
-instance (JSON.FromJSON key, JSON.FromJSON content)
-         => JSON.FromJSON (ConditionalMapSpecification key content) where
+instance (JSON.FromJSON content)
+         => JSON.FromJSON (ConditionalMapSpecification content) where
   parseJSON value@(JSON.Object _) = do
     items <- JSON.parseJSON value
-             >>= mapM (\(key, item) ->
+             >>= mapM (\(key, value) -> do
+                          item <- JSON.parseJSON value
                           case item of
                             (JSON.String case' : conditions)
                               | case' == "case" -> do
                                   conditions <- mapM JSON.parseJSON conditions
                                   return (key, conditions)
                             _ -> do
-                              plain <- JSON.parseJSON item
+                              plain <- JSON.parseJSON value
                               return (key, [(DefaultCondition, plain)]))
                  . Map.toList
              >>= return . Map.fromList
@@ -889,24 +997,26 @@ instance (JSON.FromJSON key, JSON.FromJSON content)
                  conditionalMapSpecificationItems = items
                }
   parseJSON _ = mzero
-instance (JSON.ToJSON key, JSON.ToJSON content)
-         => JSON.ToJSON (ConditionalMapSpecification key content) where
+instance (JSON.ToJSON content)
+         => JSON.ToJSON (ConditionalMapSpecification content) where
   toJSON conditional =
-    JSON.toJSON $ Map.fromList
-      $ map (\(key, value) -> (key, (JSON.String "case", value)))
-            (conditionalMapSpecificationItems conditional)
+    JSON.toJSON
+      $ map (\(key, value) ->
+                (Text.pack key .=
+                 JSON.toJSON (JSON.String "case", JSON.toJSON value)))
+            (Map.toList $ conditionalMapSpecificationItems conditional)
 
 
 applyMapFlags
   :: Map String Bool
-  -> ConditionalMapSpecification key content
-  -> Compilation (Map key content)
+  -> ConditionalMapSpecification content
+  -> Compilation (Map String content)
 applyMapFlags flags specification = do
   foldM (\mapSoFar (key, conditions) -> do
            maybeValue <-
              foldM (\valueSoFar (condition, value) ->
                       case valueSoFar of
-                        Just _ -> valueSoFar
+                        Just _ -> return valueSoFar
                         Nothing -> do
                           applicable <- testCondition flags condition
                           if applicable
@@ -972,6 +1082,16 @@ testCondition flags condition = do
         (Map.toList $ conditionFlags condition)
 
 
+data Type =
+  Type {
+      typeSubcolumns :: [Subcolumn]
+    }
+instance JSON.ToJSON Type where
+  toJSON type' =
+    JSON.object
+      ["subcolumns" .= (JSON.toJSON $ typeSubcolumns type')]
+
+
 data TableRole =
   TableRole {
       tableRoleName :: String,
@@ -1011,7 +1131,7 @@ instance JSON.ToJSON Table where
 data Column =
   Column {
       columnName :: String,
-      columnType :: TypeSpecificationFlattened,
+      columnType :: TypeReferenceSpecificationFlattened,
       columnReadOnly :: Bool,
       columnConcretePathOf :: Maybe String
     }
@@ -1049,7 +1169,7 @@ instance JSON.ToJSON PreEntity where
 data PreColumn =
   PreColumn {
       preColumnName :: NameSpecificationFlattened,
-      preColumnType :: TypeSpecificationFlattened,
+      preColumnType :: TypeReferenceSpecificationFlattened,
       preColumnReadOnly :: Bool,
       preColumnTableRoles :: Set String,
       preColumnRole :: ColumnRole,
@@ -1078,19 +1198,6 @@ instance JSON.ToJSON ColumnRole where
       "priority" .= (JSON.toJSON $ columnRolePriority columnRole)]
 
 
-data SubcolumnSpecification =
-  SubcolumnSpecification {
-      subcolumnSpecificationName :: ConditionalSpecification NameSpecification,
-      subcolumnSpecificationType :: ConditionalSpecification PrimitiveType
-    }
-instance JSON.ToJSON SubcolumnSpecification where
-  toJSON subcolumn =
-    JSON.object
-      ["name" .= JSON.toJSON (subcolumnSpecificationName subcolumn),
-       "type" .= JSON.toJSON
-         (show $ SQL.showTokens $ subcolumnSpecificationType subcolumn)]
-
-
 data Subcolumn =
   Subcolumn {
       subcolumnName :: NameSpecificationFlattened,
@@ -1100,7 +1207,7 @@ instance JSON.ToJSON Subcolumn where
   toJSON subcolumn =
     JSON.object
       ["name" .= JSON.toJSON (subcolumnName subcolumn),
-       "type" .= JSON.toJSON (show $ SQL.showTokens $ subcolumnType subcolumn)]
+       "type" .= JSON.toJSON (subcolumnType subcolumn)]
 
 
 data PrimitiveType
@@ -1121,60 +1228,6 @@ instance JSON.ToJSON PrimitiveType where
   toJSON NumericPrimitiveType = JSON.String "numeric"
   toJSON BlobPrimitiveType = JSON.String "blob"
   toJSON TextPrimitiveType = JSON.String "text"
-
-
-class Type type' where
-  typeSubcolumns :: type' -> [Subcolumn]
-
-
-data AnyType = forall type' . Type type' => AnyType type'
-
-
-data UUIDType = UUIDType
-instance Type UUIDType where
-  typeSubcolumns UUIDType =
-    [Subcolumn {
-         subcolumnName =
-           NameSpecification [VariableNameSpecificationPart "column"],
-         subcolumnType =
-          ConditionalSpecification {
-              conditionalSpecificationConditions =
-                [(DefaultCondition, BlobPrimitiveType)]
-            }
-       }]
-
-
-data TimestampType = TimestampType
-instance Type TimestampType where
-  typeSubcolumns TimestampType =
-    [Subcolumn {
-         subcolumnName =
-           NameSpecification [VariableNameSpecificationPart "column"],
-         subcolumnType =
-          ConditionalSpecification {
-              conditionalSpecificationConditions =
-                [(DefaultCondition, IntegerPrimitiveType)]
-            }
-       }]
-
-
-data EmailType = EmailType
-instance Type EmailType where
-  typeSubcolumns EmailType =
-    [Subcolumn {
-        subcolumnName =
-          NameSpecification [VariableNameSpecificationPart "column"],
-        subcolumnType =
-          ConditionalSpecification {
-              conditionalSpecificationConditions =
-                [(DefaultCondition, TextPrimitiveType)]
-            }
-      }]
-
-
-data MaybeType = MaybeType AnyType
-instance Type MaybeType where
-  typeSubcolumns (MaybeType (AnyType subtype)) = typeSubcolumns subtype
 
 
 data Compilation a = Compilation (MTL.ErrorT String MTL.Identity a)
@@ -1205,6 +1258,11 @@ runCompilation (Compilation action) =
 
 compile :: Schema -> Either String D.Schema
 compile schema = runCompilation $ do
+  types <- mapM (\(name, type') -> do
+                    type' <- flattenTypeSpecification Map.empty type'
+                    return (name, type'))
+                (Map.toList $ schemaTypes schema)
+           >>= return . Map.fromList
   tableRoles <- compileTableRoles Map.empty (schemaTableRoles schema)
   columnRoles <- compileColumnRoles (schemaColumnRoles schema)
   entities <- compileEntities tableRoles
@@ -1214,7 +1272,7 @@ compile schema = runCompilation $ do
                               (schemaColumnFlags schema)
                               (schemaColumnTemplates schema)
                               (schemaEntities schema)
-  tables <- mapM compileTable
+  tables <- mapM (compileTable types)
                  $ concatMap (\entity -> Map.elems $ entityTables entity)
                              (Map.elems entities)
   return $ D.Schema {
@@ -1490,10 +1548,28 @@ flattenField object flags field accessor flattener = do
         Just value -> flattener flags value
 
 
-compileTable :: Table -> Compilation SQL.CreateTable
-compileTable table =
+flattenListField
+  :: object
+  -> Map String Bool
+  -> String
+  -> (object -> Maybe (ConditionalListSpecification field))
+  -> (Map String Bool -> field -> Compilation flattened)
+  -> Compilation [flattened]
+flattenListField object flags field accessor flattener = do
+  case accessor object of
+    Nothing -> throwError $ "Field \"" ++ field ++ "\" undefined."
+    Just value -> do
+      values <- applyListFlags flags value
+      mapM (flattener flags) values
+
+
+compileTable
+  :: Map String TypeSpecificationFlattened
+  -> Table
+  -> Compilation SQL.CreateTable
+compileTable allTypes table =
   tagErrors ("Compiling table \"" ++ (tableName table) ++ "\"") $ do
-    columns <- mapM compileColumn (Map.elems $ tableColumns table)
+    columns <- mapM (compileColumn allTypes) (Map.elems $ tableColumns table)
                >>= return . concat
     case SQL.mkOneOrMore columns of
       Nothing -> throwError "No columns."
@@ -1504,9 +1580,12 @@ compileTable table =
                      $ SQL.ColumnsAndConstraints columns []
 
 
-compileColumn :: Column -> Compilation [SQL.ColumnDefinition]
-compileColumn column = do
-  AnyType type' <- compileType $ columnType column
+compileColumn
+  :: Map String TypeSpecificationFlattened
+  -> Column
+  -> Compilation [SQL.ColumnDefinition]
+compileColumn allTypes column = do
+  type' <- compileTypeReference allTypes (columnType column)
   mapM (\subcolumn -> do
           name <- substituteNameSpecification
                     (Map.fromList [("column", columnName column)])
@@ -1520,18 +1599,12 @@ compileColumn column = do
        (typeSubcolumns type')
 
 
-compileType :: TypeSpecificationFlattened -> Compilation AnyType
-compileType (TypeSpecificationFlattened "timestamp" []) = do
-  return $ AnyType TimestampType
-compileType (TypeSpecificationFlattened "uuid" []) = do
-  return $ AnyType UUIDType
-compileType (TypeSpecificationFlattened "email" []) = do
-  return $ AnyType EmailType
-compileType (TypeSpecificationFlattened "maybe" [subtype]) = do
-  subtype <- compileType subtype
-  return $ AnyType (MaybeType subtype)
-compileType (TypeSpecificationFlattened name _) = do
-  throwError $ "Unknown type \"" ++ name ++ "\"."
+compileTypeReference
+  :: Map String TypeSpecificationFlattened
+  -> TypeReferenceSpecificationFlattened
+  -> Compilation Type
+compileTypeReference types reference = do
+  throwError $ "Unknown type \"" ++ "..." ++ "\"."
 
 
 compilePrimitiveType :: PrimitiveType -> Compilation SQL.Type
