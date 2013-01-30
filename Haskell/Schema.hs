@@ -217,7 +217,7 @@ data EntitySpecificationFlattened =
       entitySpecificationFlattenedTables :: [String],
       entitySpecificationFlattenedKey :: [KeyColumnSpecificationFlattened],
       entitySpecificationFlattenedColumns :: [ColumnSpecificationFlattened],
-      entitySpecificationFlattenedRelations :: [RelationSpecification]
+      entitySpecificationFlattenedRelations :: [RelationSpecificationFlattened]
     }
 
 
@@ -673,6 +673,7 @@ data RelationSpecificationFlattened =
       relationSpecificationFlattenedUnique :: Bool,
       relationSpecificationFlattenedKey :: Maybe [NameSpecificationFlattened]
     }
+  deriving (Typeable)
 instance JSON.ToJSON RelationSpecificationFlattened where
   toJSON relation =
     JSON.object
@@ -685,7 +686,32 @@ instance JSON.ToJSON RelationSpecificationFlattened where
        "key" .= JSON.toJSON (relationSpecificationFlattenedKey relation)]
 
 
-flattenRelationSpecification = undefined
+flattenRelationSpecification
+  :: Context
+  -> RelationSpecification
+  -> Compilation RelationSpecificationFlattened
+flattenRelationSpecification entityContext relation = do
+  entity <- evaluate entityContext (relationSpecificationEntity relation)
+  purpose <-
+    case relationSpecificationPurpose relation of
+      Nothing -> return Nothing
+      Just purpose -> evaluate entityContext purpose
+                      >>= return . Just
+  required <- evaluate entityContext (relationSpecificationRequired relation)
+  unique <- evaluate entityContext (relationSpecificationUnique relation)
+  key <-
+    case relationSpecificationKey relation of
+      Nothing -> return Nothing
+      Just key -> evaluate entityContext key
+                  >>= mapM (flattenNameSpecification entityContext)
+                  >>= return . Just
+  return $ RelationSpecificationFlattened {
+               relationSpecificationFlattenedEntity = entity,
+               relationSpecificationFlattenedPurpose = purpose,
+               relationSpecificationFlattenedRequired = required,
+               relationSpecificationFlattenedUnique = unique,
+               relationSpecificationFlattenedKey = key
+             }
 
 
 data NameSpecification =
@@ -1494,7 +1520,6 @@ preCompileEntity allTableRoles allColumnRoles theEntityName flattened = do
   let flags = entitySpecificationFlattenedFlags flattened
       dataColumns = entitySpecificationFlattenedColumns flattened
       relations = entitySpecificationFlattenedRelations flattened
-  relations <- mapM (flattenRelationSpecification) relations
   return $ PreEntity {
                preEntityName = theEntityName,
                preEntityFlags = flags,
