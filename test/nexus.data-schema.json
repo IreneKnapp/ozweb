@@ -48,6 +48,7 @@
           "name": "column"
         }],
         "type": "blob"
+      }]
     },
     "timestamp": {
       "subcolumns": [{
@@ -56,6 +57,7 @@
           "name": "column"
         }],
         "type": "integer"
+      }]
     },
     "email": {
       "subcolumns": [{
