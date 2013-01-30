@@ -38,7 +38,7 @@ import Debug.Trace
 import Trace
 
 
-checkAllowedKeys :: [Text] -> HashMap Text JSON.Value -> JSON.Parser ()
+checkAllowedKeys :: [Text] -> JSON.Object -> JSON.Parser ()
 checkAllowedKeys allowedKeys theMap = do
   mapM_ (\(key, _) -> do
             if elem key allowedKeys
@@ -81,7 +81,7 @@ data Schema =
       schemaEntities :: Map String EntitySpecification
     }
 instance JSON.FromJSON Schema where
-  parseJSON (JSON.Object value) = do
+  parseJSON value@(JSON.Object hashMap) = do
     checkAllowedKeys ["id",
                       "version",
                       "types",
@@ -92,17 +92,17 @@ instance JSON.FromJSON Schema where
                       "entity_flags",
                       "entity_templates",
                       "entities"]
-                     value
-    Schema <$> value .: "id"
-           <*> value .: "version"
-           <*> (value .:? "types" .!= Map.empty)
-           <*> (value .:? "table_roles" .!= Map.empty)
-           <*> (value .:? "column_flags" .!= Set.empty)
-           <*> (value .:? "column_roles" .!= Map.empty)
-           <*> (value .:? "column_templates" .!= Map.empty)
-           <*> (value .:? "entity_flags" .!= [] >>= return . Set.fromList)
-           <*> (value .:? "entity_templates" .!= Map.empty)
-           <*> (value .:? "entities" .!= Map.empty)
+                     hashMap
+    Schema <$> hashMap .: "id"
+           <*> hashMap .: "version"
+           <*> (hashMap .:? "types" .!= Map.empty)
+           <*> (hashMap .:? "table_roles" .!= Map.empty)
+           <*> (hashMap .:? "column_flags" .!= Set.empty)
+           <*> (hashMap .:? "column_roles" .!= Map.empty)
+           <*> (hashMap .:? "column_templates" .!= Map.empty)
+           <*> (hashMap .:? "entity_flags" .!= [] >>= return . Set.fromList)
+           <*> (hashMap .:? "entity_templates" .!= Map.empty)
+           <*> (hashMap .:? "entities" .!= Map.empty)
   parseJSON _ = mzero
 
 
@@ -111,11 +111,11 @@ data TableRoleSpecification =
       tableRoleSpecificationName :: Expression -- NameSpecification
     }
 instance JSON.FromJSON TableRoleSpecification where
-  parseJSON (JSON.Object value) = do
+  parseJSON value@(JSON.Object hashMap) = do
     checkAllowedKeys ["name"]
-                     value
+                     hashMap
     TableRoleSpecification
-      <$> pullOutExpressionField value "name"
+      <$> pullOutExpressionField hashMap "name"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser NameSpecification)
   parseJSON _ = mzero
 
@@ -131,24 +131,24 @@ data EntitySpecification =
         :: Maybe Expression -- [RelationSpecification]
     }
 instance JSON.FromJSON EntitySpecification where
-  parseJSON (JSON.Object value) = do
+  parseJSON value@(JSON.Object hashMap) = do
     checkAllowedKeys ["template",
                       "flags",
                       "tables",
                       "key",
                       "columns",
                       "relations"]
-                     value
+                     hashMap
     EntitySpecification
-      <$> value .:? "template"
-      <*> value .:? "flags"
-      <*> pullOutMaybeExpressionField value "tables"
+      <$> hashMap .:? "template"
+      <*> hashMap .:? "flags"
+      <*> pullOutMaybeExpressionField hashMap "tables"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser [String])
-      <*> pullOutMaybeExpressionField value "key"
+      <*> pullOutMaybeExpressionField hashMap "key"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser [ColumnSpecification])
-      <*> pullOutMaybeExpressionField value "columns"
+      <*> pullOutMaybeExpressionField hashMap "columns"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser [ColumnSpecification])
-      <*> pullOutMaybeExpressionField value "relations"
+      <*> pullOutMaybeExpressionField hashMap "relations"
             (JSON.parseJSON :: JSON.Value
                             -> JSON.Parser [RelationSpecification])
   parseJSON _ = mzero
@@ -314,7 +314,7 @@ data ColumnSpecification =
     }
   deriving (Typeable)
 instance JSON.FromJSON ColumnSpecification where
-  parseJSON (JSON.Object value) = do
+  parseJSON value@(JSON.Object hashMap) = do
     checkAllowedKeys ["template",
                       "flags",
                       "name",
@@ -323,8 +323,8 @@ instance JSON.FromJSON ColumnSpecification where
                       "table_roles",
                       "read_only",
                       "concrete_path_of"]
-                     value
-    flags <- value .:? "flags"
+                     hashMap
+    flags <- hashMap .:? "flags"
     flags <- case flags of
                Nothing -> return Nothing
                Just flagMap -> do
@@ -338,21 +338,21 @@ instance JSON.FromJSON ColumnSpecification where
                       (Map.toList flagMap)
                  >>= return . Just . Map.fromList
     ColumnSpecification
-      <$> pullOutMaybeExpressionField value "template"
+      <$> pullOutMaybeExpressionField hashMap "template"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser String)
       <*> pure flags
-      <*> pullOutMaybeExpressionField value "name"
+      <*> pullOutMaybeExpressionField hashMap "name"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser NameSpecification)
-      <*> pullOutMaybeExpressionField value "type"
+      <*> pullOutMaybeExpressionField hashMap "type"
             (JSON.parseJSON :: JSON.Value
                             -> JSON.Parser TypeReferenceSpecification)
-      <*> pullOutMaybeExpressionField value "table_roles"
+      <*> pullOutMaybeExpressionField hashMap "table_roles"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser [String])
-      <*> pullOutMaybeExpressionField value "role"
+      <*> pullOutMaybeExpressionField hashMap "role"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser String)
-      <*> pullOutMaybeExpressionField value "read_only"
+      <*> pullOutMaybeExpressionField hashMap "read_only"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser Bool)
-      <*> pullOutMaybeExpressionField value "concrete_path_of"
+      <*> pullOutMaybeExpressionField hashMap "concrete_path_of"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser NameSpecification)
   parseJSON _ = mzero
 instance Monoid ColumnSpecification where
@@ -623,10 +623,10 @@ data ColumnRoleSpecification =
       columnRoleSpecificationPriority :: Int
     }
 instance JSON.FromJSON ColumnRoleSpecification where
-  parseJSON (JSON.Object value) = do
+  parseJSON value@(JSON.Object hashMap) = do
     checkAllowedKeys ["priority"]
-                     value
-    ColumnRoleSpecification <$> value .: "priority"
+                     hashMap
+    ColumnRoleSpecification <$> hashMap .: "priority"
   parseJSON _ = mzero
 instance JSON.ToJSON ColumnRoleSpecification where
   toJSON columnRole =
@@ -645,23 +645,23 @@ data RelationSpecification =
     }
   deriving (Typeable)
 instance JSON.FromJSON RelationSpecification where
-  parseJSON (JSON.Object value) = do
+  parseJSON value@(JSON.Object hashMap) = do
     checkAllowedKeys ["entity",
                       "purpose",
                       "required",
                       "unique",
                       "key"]
-                     value
+                     hashMap
     RelationSpecification
-      <$> pullOutExpressionField value "entity"
+      <$> pullOutExpressionField hashMap "entity"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser String)
-      <*> pullOutMaybeExpressionField value "purpose"
+      <*> pullOutMaybeExpressionField hashMap "purpose"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser String)
-      <*> pullOutExpressionField value "required"
+      <*> pullOutExpressionField hashMap "required"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser Bool)
-      <*> pullOutExpressionField value "unique"
+      <*> pullOutExpressionField hashMap "unique"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser Bool)
-      <*> pullOutMaybeExpressionField value "key"
+      <*> pullOutMaybeExpressionField hashMap "key"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser [NameSpecification])
 
 
@@ -745,20 +745,20 @@ data NameSpecificationPart
 instance JSON.FromJSON NameSpecificationPart where
   parseJSON (JSON.String text) =
     pure $ LiteralNameSpecificationPart $ Text.unpack text
-  parseJSON (JSON.Object value) = do
-    type' <- value .: "type"
+  parseJSON value@(JSON.Object hashMap) = do
+    type' <- hashMap .: "type"
     return (type' :: String)
     case type' of
       "constant" -> do
         checkAllowedKeys ["type",
                           "value"]
-                         value
-        LiteralNameSpecificationPart <$> value .: "value"
+                         hashMap
+        LiteralNameSpecificationPart <$> hashMap .: "value"
       "variable" -> do
         checkAllowedKeys ["type",
                           "name"]
-                         value
-        VariableNameSpecificationPart <$> value .: "name"
+                         hashMap
+        VariableNameSpecificationPart <$> hashMap .: "name"
       _ -> mzero
   parseJSON _ = mzero
 instance JSON.ToJSON NameSpecificationPart where
@@ -846,14 +846,14 @@ data TypeSpecification =
         :: Maybe Expression -- [SubcolumnSpecification]
     }
 instance JSON.FromJSON TypeSpecification where
-  parseJSON (JSON.Object value) = do
+  parseJSON value@(JSON.Object hashMap) = do
     checkAllowedKeys ["parameters",
                       "subcolumns"]
-                     value
+                     hashMap
     TypeSpecification
-      <$> pullOutMaybeExpressionField value "parameters"
+      <$> pullOutMaybeExpressionField hashMap "parameters"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser [String])
-      <*> pullOutMaybeExpressionField value "subcolumns"
+      <*> pullOutMaybeExpressionField hashMap "subcolumns"
             (JSON.parseJSON :: JSON.Value
                             -> JSON.Parser [SubcolumnSpecification])
   parseJSON _ = mzero
@@ -909,14 +909,14 @@ data SubcolumnSpecification =
     }
   deriving (Typeable)
 instance JSON.FromJSON SubcolumnSpecification where
-  parseJSON (JSON.Object value) = do
+  parseJSON value@(JSON.Object hashMap) = do
     checkAllowedKeys ["name",
                       "type"]
-                     value
+                     hashMap
     SubcolumnSpecification
-      <$> pullOutMaybeExpressionField value "name"
+      <$> pullOutMaybeExpressionField hashMap "name"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser NameSpecification)
-      <*> pullOutMaybeExpressionField value "type"
+      <*> pullOutMaybeExpressionField hashMap "type"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser PrimitiveType)
   parseJSON _ = mzero
 
