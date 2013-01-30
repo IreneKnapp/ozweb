@@ -117,6 +117,7 @@ instance JSON.FromJSON TableRoleSpecification where
     TableRoleSpecification
       <$> pullOutExpressionField hashMap "name"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser NameSpecification)
+            False
   parseJSON _ = mzero
 
 
@@ -143,14 +144,18 @@ instance JSON.FromJSON EntitySpecification where
       <$> hashMap .:? "template"
       <*> hashMap .:? "flags"
       <*> pullOutMaybeExpressionField hashMap "tables"
-            (JSON.parseJSON :: JSON.Value -> JSON.Parser [String])
+            (JSON.parseJSON :: JSON.Value -> JSON.Parser String)
+            True
       <*> pullOutMaybeExpressionField hashMap "key"
-            (JSON.parseJSON :: JSON.Value -> JSON.Parser [ColumnSpecification])
+            (JSON.parseJSON :: JSON.Value -> JSON.Parser ColumnSpecification)
+            True
       <*> pullOutMaybeExpressionField hashMap "columns"
-            (JSON.parseJSON :: JSON.Value -> JSON.Parser [ColumnSpecification])
+            (JSON.parseJSON :: JSON.Value -> JSON.Parser ColumnSpecification)
+            True
       <*> pullOutMaybeExpressionField hashMap "relations"
             (JSON.parseJSON :: JSON.Value
-                            -> JSON.Parser [RelationSpecification])
+                            -> JSON.Parser RelationSpecification)
+            True
   parseJSON _ = mzero
 instance Monoid EntitySpecification where
   mempty = EntitySpecification {
@@ -333,6 +338,7 @@ instance JSON.FromJSON ColumnSpecification where
                             parseJSONExpression
                               (JSON.parseJSON :: JSON.Value
                                               -> JSON.Parser Bool)
+                              False
                               flagValue
                           return (key, flagExpression))
                       (Map.toList flagMap)
@@ -340,20 +346,27 @@ instance JSON.FromJSON ColumnSpecification where
     ColumnSpecification
       <$> pullOutMaybeExpressionField hashMap "template"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser String)
+            False
       <*> pure flags
       <*> pullOutMaybeExpressionField hashMap "name"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser NameSpecification)
+            False
       <*> pullOutMaybeExpressionField hashMap "type"
             (JSON.parseJSON :: JSON.Value
                             -> JSON.Parser TypeReferenceSpecification)
+            False
       <*> pullOutMaybeExpressionField hashMap "table_roles"
-            (JSON.parseJSON :: JSON.Value -> JSON.Parser [String])
+            (JSON.parseJSON :: JSON.Value -> JSON.Parser String)
+            True
       <*> pullOutMaybeExpressionField hashMap "role"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser String)
+            False
       <*> pullOutMaybeExpressionField hashMap "read_only"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser Bool)
+            False
       <*> pullOutMaybeExpressionField hashMap "concrete_path_of"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser NameSpecification)
+            False
   parseJSON _ = mzero
 instance Monoid ColumnSpecification where
   mempty = ColumnSpecification {
@@ -655,14 +668,19 @@ instance JSON.FromJSON RelationSpecification where
     RelationSpecification
       <$> pullOutExpressionField hashMap "entity"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser String)
+            False
       <*> pullOutMaybeExpressionField hashMap "purpose"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser String)
+            False
       <*> pullOutExpressionField hashMap "required"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser Bool)
+            False
       <*> pullOutExpressionField hashMap "unique"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser Bool)
+            False
       <*> pullOutMaybeExpressionField hashMap "key"
-            (JSON.parseJSON :: JSON.Value -> JSON.Parser [NameSpecification])
+            (JSON.parseJSON :: JSON.Value -> JSON.Parser NameSpecification)
+            True
 
 
 data RelationSpecificationFlattened =
@@ -727,7 +745,8 @@ instance JSON.FromJSON NameSpecification where
   parseJSON items@(JSON.Array _) =
     NameSpecification <$>
       (parseJSONExpression
-        (JSON.parseJSON :: JSON.Value -> JSON.Parser [NameSpecificationPart])
+        (JSON.parseJSON :: JSON.Value -> JSON.Parser NameSpecificationPart)
+        True
         items)
   parseJSON _ = mzero
 
@@ -785,11 +804,13 @@ instance JSON.FromJSON TypeReferenceSpecification where
         constructor <-
           parseJSONExpression
             (JSON.parseJSON :: JSON.Value -> JSON.Parser String)
+            False
             constructor
         parameters <- mapM
           (parseJSONExpression
             (JSON.parseJSON
-              :: JSON.Value -> JSON.Parser TypeReferenceSpecification))
+              :: JSON.Value -> JSON.Parser TypeReferenceSpecification)
+            False)
           parameters
         let parameterList = ListExpression {
                              listExpressionItems = parameters
@@ -799,6 +820,7 @@ instance JSON.FromJSON TypeReferenceSpecification where
         item <-
           (parseJSONExpression
             (JSON.parseJSON :: JSON.Value -> JSON.Parser String)
+            False
             value)
         return $ TypeReferenceSpecification item
                    (ConstantExpression {
@@ -809,6 +831,7 @@ instance JSON.FromJSON TypeReferenceSpecification where
     item <-
       (parseJSONExpression
         (JSON.parseJSON :: JSON.Value -> JSON.Parser String)
+        False
         value)
     return $ TypeReferenceSpecification item
                (ConstantExpression {
@@ -852,10 +875,12 @@ instance JSON.FromJSON TypeSpecification where
                      hashMap
     TypeSpecification
       <$> pullOutMaybeExpressionField hashMap "parameters"
-            (JSON.parseJSON :: JSON.Value -> JSON.Parser [String])
+            (JSON.parseJSON :: JSON.Value -> JSON.Parser String)
+            True
       <*> pullOutMaybeExpressionField hashMap "subcolumns"
             (JSON.parseJSON :: JSON.Value
-                            -> JSON.Parser [SubcolumnSpecification])
+                            -> JSON.Parser SubcolumnSpecification)
+            True
   parseJSON _ = mzero
 
 
@@ -916,8 +941,10 @@ instance JSON.FromJSON SubcolumnSpecification where
     SubcolumnSpecification
       <$> pullOutMaybeExpressionField hashMap "name"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser NameSpecification)
+            False
       <*> pullOutMaybeExpressionField hashMap "type"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser PrimitiveType)
+            False
   parseJSON _ = mzero
 
 
@@ -997,9 +1024,10 @@ data Expression
 parseJSONExpression
   :: (Typeable content)
   => (JSON.Value -> JSON.Parser content)
+  -> Bool
   -> JSON.Value
   -> JSON.Parser Expression
-parseJSONExpression underlyingParser value@(JSON.Array _) = do
+parseJSONExpression underlyingParser isList value@(JSON.Array _) = do
   items <- JSON.parseJSON value
   case items of
     (JSON.String variable' : JSON.String name : [])
@@ -1014,13 +1042,13 @@ parseJSONExpression underlyingParser value@(JSON.Array _) = do
           case default' of
             (JSON.String default' : subvalue : [])
               | default' == "default" ->
-                  parseJSONExpression underlyingParser subvalue
+                  parseJSONExpression underlyingParser isList subvalue
             _ -> fail $ "No default condition in case expression."
         conditions <- mapM (\subvalue -> do
                               (condition, expression) <-
                                 JSON.parseJSON subvalue
                               expression <-
-                                parseJSONExpression underlyingParser
+                                parseJSONExpression underlyingParser isList
                                                     expression
                               return (condition, expression))
                            (init conditions)
@@ -1034,26 +1062,77 @@ parseJSONExpression underlyingParser value@(JSON.Array _) = do
           (JSON.parseJSON
             :: JSON.Value
             -> JSON.Parser TypeReferenceSpecification)
+          False
           type'
         return $ SubcolumnsExpression {
                      subcolumnsExpressionType = type'
                    }
     ((JSON.String concatenate) : items : [])
       | concatenate == "concatenate" -> do
-        items <- parseJSONExpression underlyingParser items
+        items <- parseJSONExpression underlyingParser isList items
         return $ ConcatenateExpression {
                      concatenateExpressionItems = items
                    }
     _ -> do
-      item <- underlyingParser value
-      return $ ConstantExpression {
-                   constantExpressionValue = toDyn item
-                 }
-parseJSONExpression underlyingParser value = do
-    item <- underlyingParser value
-    return $ ConstantExpression {
-                 constantExpressionValue = toDyn item
-              }
+      if isList
+        then do
+          let helper item = do
+                case item of
+                  value@(JSON.Array _) -> do
+                    items <- JSON.parseJSON value
+                    case items of
+                      (JSON.String "when" : condition : items) -> do
+                        condition <- JSON.parseJSON condition
+                        parsedItems <- mapM helper items
+                        return $ ConditionalExpression {
+                                     conditionalExpressionItems =
+                                       [(condition,
+                                         ConcatenateExpression {
+                                             concatenateExpressionItems =
+                                               ListExpression {
+                                                   listExpressionItems =
+                                                     parsedItems
+                                                }
+                                           })],
+                                     conditionalExpressionDefaultItem =
+                                       ListExpression {
+                                           listExpressionItems = []
+                                         }
+                                   }
+                      _ -> do
+                        item <- underlyingParser value
+                        return $ ListExpression {
+                                     listExpressionItems =
+                                       [ConstantExpression {
+                                            constantExpressionValue =
+                                              toDyn item
+                                          }]
+                                   }
+                  _ -> do
+                    item <- underlyingParser value
+                    return $ ListExpression {
+                                 listExpressionItems =
+                                   [ConstantExpression {
+                                        constantExpressionValue = toDyn item
+                                      }]
+                               }
+          items <- mapM helper items
+          return $ ConcatenateExpression {
+                       concatenateExpressionItems =
+                         ListExpression {
+                             listExpressionItems = items
+                           }
+                     }
+        else do
+          item <- underlyingParser value
+          return $ ConstantExpression {
+                       constantExpressionValue = toDyn item
+                     }
+parseJSONExpression underlyingParser isList value = do
+  item <- underlyingParser value
+  return $ ConstantExpression {
+               constantExpressionValue = toDyn item
+             }
 
 
 pullOutExpressionField
@@ -1061,10 +1140,12 @@ pullOutExpressionField
   => JSON.Object
   -> Text
   -> (JSON.Value -> JSON.Parser content)
+  -> Bool
   -> JSON.Parser Expression
-pullOutExpressionField value field underlyingParser = do
-  subvalue <- value .: field
-  parseJSONExpression underlyingParser subvalue
+pullOutExpressionField value field underlyingParser isList = do
+  wrapErrors ("Parsing " ++ Text.unpack field) $ do
+    subvalue <- value .: field
+    parseJSONExpression underlyingParser isList subvalue
 
 
 pullOutMaybeExpressionField
@@ -1072,13 +1153,15 @@ pullOutMaybeExpressionField
   => JSON.Object
   -> Text
   -> (JSON.Value -> JSON.Parser content)
+  -> Bool
   -> JSON.Parser (Maybe Expression)
-pullOutMaybeExpressionField value field underlyingParser = do
-  maybeSubvalue <- value .:? field
-  case maybeSubvalue of
-    Nothing -> return Nothing
-    Just subvalue -> parseJSONExpression underlyingParser subvalue
-      >>= return . Just
+pullOutMaybeExpressionField value field underlyingParser isList = do
+  wrapErrors ("Parsing " ++ Text.unpack field) $ do
+    maybeSubvalue <- value .:? field
+    case maybeSubvalue of
+      Nothing -> return Nothing
+      Just subvalue -> parseJSONExpression underlyingParser isList subvalue
+        >>= return . Just
 
 
 evaluate
