@@ -48,21 +48,21 @@ checkAllowedKeys allowedKeys theMap = do
 
 
 instance JSON.FromJSON UUID.UUID where
-  parseJSON (JSON.String text) =
+  parseJSON value@(JSON.String text) =
     case reads $ Text.unpack text of
       [(uuid, "")] -> pure uuid
-      _ -> mzero
-  parseJSON _ = mzero
+      _ -> fail $ "Expected UUID but got " ++ (encode value)
+  parseJSON value = fail $ "Expected UUID but got " ++ (encode value)
 instance JSON.ToJSON UUID.UUID where
   toJSON uuid = JSON.toJSON $ show uuid
 
 
 instance JSON.FromJSON Timestamp.Timestamp where
-  parseJSON (JSON.String text) =
+  parseJSON value@(JSON.String text) =
     case reads $ Text.unpack text of
       [(timestamp, "")] -> pure $ fromInteger timestamp
-      _ -> mzero
-  parseJSON _ = mzero
+      _ -> fail $ "Expected timestamp but got " ++ (encode value)
+  parseJSON value = fail $ "Expected timestamp but got " ++ (encode value)
 instance JSON.ToJSON Timestamp.Timestamp where
   toJSON timestamp = JSON.toJSON $ show timestamp
 
@@ -103,7 +103,7 @@ instance JSON.FromJSON Schema where
            <*> (hashMap .:? "entity_flags" .!= [] >>= return . Set.fromList)
            <*> (hashMap .:? "entity_templates" .!= Map.empty)
            <*> (hashMap .:? "entities" .!= Map.empty)
-  parseJSON _ = mzero
+  parseJSON value = fail $ "Expected schema but got " ++ (encode value)
 
 
 data TableRoleSpecification =
@@ -118,7 +118,7 @@ instance JSON.FromJSON TableRoleSpecification where
       <$> pullOutExpressionField hashMap "name"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser NameSpecification)
             False
-  parseJSON _ = mzero
+  parseJSON value = fail $ "Expected table-role but got " ++ (encode value)
 
 
 data EntitySpecification =
@@ -156,7 +156,7 @@ instance JSON.FromJSON EntitySpecification where
             (JSON.parseJSON :: JSON.Value
                             -> JSON.Parser RelationSpecification)
             True
-  parseJSON _ = mzero
+  parseJSON value = fail $ "Expected entity but got " ++ (encode value)
 instance Monoid EntitySpecification where
   mempty = EntitySpecification {
                entitySpecificationTemplate = Nothing,
@@ -367,7 +367,7 @@ instance JSON.FromJSON ColumnSpecification where
       <*> pullOutMaybeExpressionField hashMap "concrete_path_of"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser NameSpecification)
             False
-  parseJSON _ = mzero
+  parseJSON value = fail $ "Expected column but got " ++ (encode value)
 instance Monoid ColumnSpecification where
   mempty = ColumnSpecification {
                columnSpecificationTemplate = Nothing,
@@ -640,7 +640,7 @@ instance JSON.FromJSON ColumnRoleSpecification where
     checkAllowedKeys ["priority"]
                      hashMap
     ColumnRoleSpecification <$> hashMap .: "priority"
-  parseJSON _ = mzero
+  parseJSON value = fail $ "Expected column-role but got " ++ (encode value)
 instance JSON.ToJSON ColumnRoleSpecification where
   toJSON columnRole =
     JSON.object
@@ -748,7 +748,7 @@ instance JSON.FromJSON NameSpecification where
         (JSON.parseJSON :: JSON.Value -> JSON.Parser NameSpecificationPart)
         True
         items)
-  parseJSON _ = mzero
+  parseJSON value = fail $ "Expected name but got " ++ (encode value)
 
 
 data NameSpecificationFlattened =
@@ -778,8 +778,8 @@ instance JSON.FromJSON NameSpecificationPart where
                           "name"]
                          hashMap
         VariableNameSpecificationPart <$> hashMap .: "name"
-      _ -> mzero
-  parseJSON _ = mzero
+      _ -> fail $ "Expected name part but got " ++ (encode value)
+  parseJSON value = fail $ "Expected name part but got " ++ (encode value)
 instance JSON.ToJSON NameSpecificationPart where
   toJSON (LiteralNameSpecificationPart value) =
     JSON.object
@@ -881,7 +881,7 @@ instance JSON.FromJSON TypeSpecification where
             (JSON.parseJSON :: JSON.Value
                             -> JSON.Parser SubcolumnSpecification)
             True
-  parseJSON _ = mzero
+  parseJSON value = fail $ "Expected type but got " ++ (encode value)
 
 
 data TypeSpecificationFlattened =
@@ -945,7 +945,7 @@ instance JSON.FromJSON SubcolumnSpecification where
       <*> pullOutMaybeExpressionField hashMap "type"
             (JSON.parseJSON :: JSON.Value -> JSON.Parser PrimitiveType)
             False
-  parseJSON _ = mzero
+  parseJSON value = fail $ "Expected subcolumn but got " ++ (encode value)
 
 
 data SubcolumnSpecificationFlattened =
@@ -1251,10 +1251,10 @@ instance JSON.FromJSON Condition where
                        conditionFlags =
                          Map.fromList [(Text.unpack text, False)]
                      }
-      _ -> mzero
+      _ -> fail $ "Expected condition but got " ++ (encode values)
   parseJSON items@(JSON.Object _) = do
     JSON.parseJSON items >>= return . Condition . Map.fromList
-  parseJSON _ = mzero
+  parseJSON value = fail $ "Expected condition but got " ++ (encode value)
 instance JSON.ToJSON Condition where
   toJSON condition@(Condition { }) = do
     JSON.toJSON $ conditionFlags condition
@@ -1414,13 +1414,13 @@ data PrimitiveType
   | TextPrimitiveType
   deriving (Typeable)
 instance JSON.FromJSON PrimitiveType where
-  parseJSON (JSON.String text)
+  parseJSON value@(JSON.String text)
     | text == "integer" = pure IntegerPrimitiveType
     | text == "numeric" = pure NumericPrimitiveType
     | text == "blob" = pure BlobPrimitiveType
     | text == "text" = pure TextPrimitiveType
-    | otherwise = mzero
-  parseJSON _ = mzero
+    | otherwise = fail $ "Expected primitive type but got " ++ (encode value)
+  parseJSON value = fail $ "Expected primitive type but got " ++ (encode value)
 instance JSON.ToJSON PrimitiveType where
   toJSON IntegerPrimitiveType = JSON.String "integer"
   toJSON NumericPrimitiveType = JSON.String "numeric"
