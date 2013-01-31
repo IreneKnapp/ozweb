@@ -42,6 +42,7 @@
   
   "types": {
     "uuid": {
+      "parameters": [],
       "subcolumns": [{
         "name": [{
           "type": "variable",
@@ -51,6 +52,7 @@
       }]
     },
     "timestamp": {
+      "parameters": [],
       "subcolumns": [{
         "name": [{
           "type": "variable",
@@ -60,6 +62,7 @@
       }]
     },
     "email": {
+      "parameters": [],
       "subcolumns": [{
         "name": [{
           "type": "variable",
@@ -149,7 +152,7 @@
     },
     "account": {
       "template": "normal",
-      "flasgs": {
+      "flags": {
         "versioned": false
       }
     },

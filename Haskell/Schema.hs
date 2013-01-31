@@ -1076,14 +1076,14 @@ parseJSONExpression underlyingParser isList value@(JSON.Array _) = do
     _ -> do
       if isList
         then do
-          let helper item = do
+          let helper toplevel item = do
                 case item of
                   value@(JSON.Array _) -> do
                     items <- JSON.parseJSON value
                     case items of
                       (JSON.String "when" : condition : items) -> do
                         condition <- JSON.parseJSON condition
-                        parsedItems <- mapM helper items
+                        parsedItems <- mapM (helper False) items
                         return $ ConditionalExpression {
                                      conditionalExpressionItems =
                                        [(condition,
@@ -1100,27 +1100,23 @@ parseJSONExpression underlyingParser isList value@(JSON.Array _) = do
                                          }
                                    }
                       _ -> do
-                        item <- underlyingParser value
+                        items <- mapM (helper False) items
                         return $ ListExpression {
-                                     listExpressionItems =
-                                       [ConstantExpression {
-                                            constantExpressionValue =
-                                              toDyn item
-                                          }]
+                                     listExpressionItems = items
                                    }
-                  _ -> do
-                    item <- underlyingParser value
-                    return $ ListExpression {
-                                 listExpressionItems =
-                                   [ConstantExpression {
-                                        constantExpressionValue = toDyn item
-                                      }]
-                               }
-          items <- mapM helper items
+                  value ->
+                    if toplevel
+                      then fail $ "Expected list but got " ++ (encode value)
+                      else do
+                        item <- underlyingParser value
+                        return $ ConstantExpression {
+                                     constantExpressionValue = toDyn item
+                                   }
+          items <- helper True value
           return $ ConcatenateExpression {
                        concatenateExpressionItems =
                          ListExpression {
-                             listExpressionItems = items
+                             listExpressionItems = [items]
                            }
                      }
         else do
@@ -1191,7 +1187,7 @@ evaluate context expression@(ListExpression { }) = do
              return $ soFar ++ [item])
           []
           (listExpressionItems expression)
-  let dynamicResult = toDyn (result :: [content])
+  let dynamicResult = toDyn (result :: content)
   case fromDynamic dynamicResult of
     Nothing -> throwError $ "List expression unexpected."
     Just result -> return result
