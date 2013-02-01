@@ -247,14 +247,14 @@ flattenEntitySpecification
   relevantTemplates <- getRelevantTemplates entity >>= return . reverse
   let flattened = mconcat relevantTemplates
       flatten
-        :: (Typeable item)
+        :: (Typeable item, Typeable result)
         => String
         -> (EntitySpecification -> Maybe Expression)
         -> (Context -> item -> Compilation result)
         -> Compilation result
       flatten = flattenField flattened emptyContext
       flattenList
-        :: (Typeable item)
+        :: (Typeable item, Typeable result)
         => String
         -> (EntitySpecification -> Maybe Expression)
         -> (Context -> item -> Compilation result)
@@ -441,6 +441,7 @@ data KeyColumnSpecificationFlattened =
       keyColumnSpecificationFlattenedTableRoles :: Set String,
       keyColumnSpecificationFlattenedColumnRole :: String
     }
+  deriving (Typeable)
 instance JSON.ToJSON KeyColumnSpecificationFlattened where
   toJSON column =
     JSON.object
@@ -463,6 +464,7 @@ flattenKeyColumnSpecification allFlags templates entityContext column = do
           Nothing -> return [column]
           Just templateNameExpression -> do
             templateName <- evaluate entityContext templateNameExpression
+                                     (undefined :: String)
             case Map.lookup templateName templates of
               Nothing -> return [column]
               Just template -> do
@@ -471,14 +473,14 @@ flattenKeyColumnSpecification allFlags templates entityContext column = do
   relevantTemplates <- getRelevantTemplates column >>= return . reverse
   let flattened = mconcat relevantTemplates
       flatten
-        :: (Typeable item)
+        :: (Typeable item, Typeable result)
         => String
         -> (ColumnSpecification -> Maybe Expression)
         -> (Context -> item -> Compilation result)
         -> Compilation result
       flatten = flattenField flattened entityContext
       flattenList
-        :: (Typeable item)
+        :: (Typeable item, Typeable result)
         => String
         -> (ColumnSpecification -> Maybe Expression)
         -> (Context -> item -> Compilation result)
@@ -537,6 +539,7 @@ data ColumnSpecificationFlattened =
       columnSpecificationFlattenedConcretePathOf
         :: Maybe NameSpecificationFlattened
     }
+  deriving (Typeable)
 instance JSON.ToJSON ColumnSpecificationFlattened where
   toJSON column =
     JSON.object $ concat
@@ -562,6 +565,7 @@ flattenColumnSpecification allFlags templates entityContext column = do
           Nothing -> return [column]
           Just templateNameExpression -> do
             templateName <- evaluate entityContext templateNameExpression
+                                     (undefined :: String)
             case Map.lookup templateName templates of
               Nothing -> return [column]
               Just template -> do
@@ -570,14 +574,14 @@ flattenColumnSpecification allFlags templates entityContext column = do
   relevantTemplates <- getRelevantTemplates column >>= return . reverse
   let flattened = mconcat relevantTemplates
       flatten
-        :: (Typeable item)
+        :: (Typeable item, Typeable result)
         => String
         -> (ColumnSpecification -> Maybe Expression)
         -> (Context -> item -> Compilation result)
         -> Compilation result
       flatten = flattenField flattened entityContext
       flattenList
-        :: (Typeable item)
+        :: (Typeable item, Typeable result)
         => String
         -> (ColumnSpecification -> Maybe Expression)
         -> (Context -> item -> Compilation result)
@@ -618,7 +622,7 @@ flattenColumnSpecification allFlags templates entityContext column = do
     case columnSpecificationConcretePathOf flattened of
       Nothing -> return Nothing
       Just value -> do
-        value <- evaluate entityContext value
+        value <- evaluate entityContext value (undefined :: NameSpecification)
         value <- flattenNameSpecification entityContext value
         return $ Just value
   return $ ColumnSpecificationFlattened {
@@ -710,17 +714,20 @@ flattenRelationSpecification
   -> Compilation RelationSpecificationFlattened
 flattenRelationSpecification entityContext relation = do
   entity <- evaluate entityContext (relationSpecificationEntity relation)
+                     (undefined :: String)
   purpose <-
     case relationSpecificationPurpose relation of
       Nothing -> return Nothing
-      Just purpose -> evaluate entityContext purpose
+      Just purpose -> evaluate entityContext purpose (undefined :: String)
                       >>= return . Just
   required <- evaluate entityContext (relationSpecificationRequired relation)
+                       (undefined :: Bool)
   unique <- evaluate entityContext (relationSpecificationUnique relation)
+                     (undefined :: Bool)
   key <-
     case relationSpecificationKey relation of
       Nothing -> return Nothing
-      Just key -> evaluate entityContext key
+      Just key -> evaluate entityContext key (undefined :: NameSpecification)
                   >>= mapM (flattenNameSpecification entityContext)
                   >>= return . Just
   return $ RelationSpecificationFlattened {
@@ -753,6 +760,7 @@ instance JSON.FromJSON NameSpecification where
 
 data NameSpecificationFlattened =
   NameSpecificationFlattened [NameSpecificationPart]
+  deriving (Typeable)
 instance JSON.ToJSON NameSpecificationFlattened where
   toJSON (NameSpecificationFlattened parts) = JSON.toJSON parts
 
@@ -843,6 +851,7 @@ instance JSON.FromJSON TypeReferenceSpecification where
 data TypeReferenceSpecificationFlattened =
   TypeReferenceSpecificationFlattened
     String [TypeReferenceSpecificationFlattened]
+  deriving (Typeable)
 instance JSON.ToJSON TypeReferenceSpecificationFlattened where
   toJSON (TypeReferenceSpecificationFlattened constructor parameters) =
     let parameters' =
@@ -856,8 +865,9 @@ flattenTypeReferenceSpecification
   -> Compilation TypeReferenceSpecificationFlattened
 flattenTypeReferenceSpecification
     context (TypeReferenceSpecification constructor parameters) = do
-  constructor <- evaluate context constructor
+  constructor <- evaluate context constructor (undefined :: String)
   parameters <- evaluate context parameters
+                         (undefined :: TypeReferenceSpecification)
   parameters <- mapM (flattenTypeReferenceSpecification context) parameters
   return $ TypeReferenceSpecificationFlattened constructor parameters
 
@@ -904,14 +914,14 @@ flattenTypeSpecification
   -> Compilation TypeSpecificationFlattened
 flattenTypeSpecification context specification = do
   let flatten
-        :: (Typeable item)
+        :: (Typeable item, Typeable result)
         => String
         -> (TypeSpecification -> Maybe Expression)
         -> (Context -> item -> Compilation result)
         -> Compilation result
       flatten = flattenField specification context
       flattenList
-        :: (Typeable item)
+        :: (Typeable item, Typeable result)
         => String
         -> (TypeSpecification -> Maybe Expression)
         -> (Context -> item -> Compilation result)
@@ -953,6 +963,7 @@ data SubcolumnSpecificationFlattened =
       subcolumnSpecificationFlattenedName :: NameSpecificationFlattened,
       subcolumnSpecificationFlattenedType :: PrimitiveType
     }
+  deriving (Typeable)
 instance JSON.ToJSON SubcolumnSpecificationFlattened where
   toJSON specification =
     JSON.object
@@ -968,7 +979,7 @@ flattenSubcolumnSpecification
   -> Compilation SubcolumnSpecificationFlattened
 flattenSubcolumnSpecification context specification = do
   let flatten
-        :: (Typeable item)
+        :: (Typeable item, Typeable result)
         => String
         -> (SubcolumnSpecification -> Maybe Expression)
         -> (Context -> item -> Compilation result)
@@ -1161,11 +1172,12 @@ pullOutMaybeExpressionField value field underlyingParser isList = do
 
 
 evaluate
-  :: forall content . (Typeable content)
+  :: forall content item . (Typeable content, Typeable item)
   => Context
   -> Expression
+  -> item
   -> Compilation content
-evaluate context expression@(VariableExpression { }) = do
+evaluate context expression@(VariableExpression { }) _ = do
   let name = variableExpressionName expression
   case Map.lookup name (contextVariables context) of
     Nothing -> throwError $ "Reference to undefined variable \"" ++ name
@@ -1175,23 +1187,23 @@ evaluate context expression@(VariableExpression { }) = do
         Nothing -> throwError $ "Variable \"" ++ name
                                 ++ "\" not of expected type."
         Just value -> return value
-evaluate context expression@(ConstantExpression { }) = do
+evaluate context expression@(ConstantExpression { }) _ = do
   let dynamicResult = constantExpressionValue expression
   case fromDynamic dynamicResult of
     Nothing -> throwError $ "Expression of unexpected type."
     Just result -> return result
-evaluate context expression@(ListExpression { }) = do
+evaluate context expression@(ListExpression { }) witness = do
   result <-
     foldM (\soFar item -> do
-             item <- evaluate context item
+             item <- evaluate context item witness
              return $ soFar ++ [item])
-          []
+          ([] :: [item])
           (listExpressionItems expression)
-  let dynamicResult = toDyn (result :: content)
+  let dynamicResult = toDyn result
   case fromDynamic dynamicResult of
     Nothing -> throwError $ "List expression unexpected."
     Just result -> return result
-evaluate context expression@(ConditionalExpression { }) = do
+evaluate context expression@(ConditionalExpression { }) witness = do
   maybeResult <-
     foldM (\maybeResult (condition, content) -> do
              case maybeResult of
@@ -1205,23 +1217,24 @@ evaluate context expression@(ConditionalExpression { }) = do
           (conditionalExpressionItems expression)
   let result =
         fromMaybe (conditionalExpressionDefaultItem expression) maybeResult
-  result <- evaluate context result
+  result <- evaluate context result witness
   let dynamicResult = toDyn (result :: content)
   case fromDynamic dynamicResult of
     Nothing -> throwError $ "Expression of unexpected type."
     Just result -> return result
-evaluate context expression@(SubcolumnsExpression { }) = do
-  type' <- evaluate context (subcolumnsExpressionType expression)
+evaluate context expression@(SubcolumnsExpression { }) _ = do
+  type' <- evaluate context (subcolumnsExpressionType expression) 
+                    (undefined :: Type)
   let dynamicResult = toDyn $ typeSubcolumns type'
   case fromDynamic dynamicResult of
     Nothing -> throwError $ "Subcolumn-list expression unexpected."
     Just result -> return result
-evaluate context expression@(ConcatenateExpression { }) = do
+evaluate context expression@(ConcatenateExpression { }) witness = do
   case expression of
     ConcatenateExpression {
         concatenateExpressionItems = itemsExpression
       } -> do
-        items <- evaluate context itemsExpression
+        items <- evaluate context itemsExpression witness
         let dynamicResult = toDyn $ (concat items :: [content])
         case fromDynamic dynamicResult of
           Nothing -> throwError $ "List expression unexpected."
@@ -1698,7 +1711,7 @@ flattenNameSpecification
   -> NameSpecification
   -> Compilation NameSpecificationFlattened
 flattenNameSpecification context (NameSpecification parts) = do
-  evaluate context parts
+  evaluate context parts (undefined :: NameSpecificationPart)
   >>= return . NameSpecificationFlattened
 
 
@@ -1734,7 +1747,7 @@ substituteNameSpecification bindings (NameSpecificationFlattened parts) = do
 
 
 flattenField
-  :: (Typeable field)
+  :: forall object field flattened . (Typeable field, Typeable flattened)
   => object
   -> Context
   -> String
@@ -1745,12 +1758,12 @@ flattenField object context field accessor flattener = do
   case accessor object of
     Nothing -> throwError $ "Field \"" ++ field ++ "\" undefined."
     Just value -> do
-      value <- evaluate context value
+      value <- evaluate context value (undefined :: flattened)
       flattener context value
 
 
 flattenListField
-  :: (Typeable field)
+  :: forall object field flattened . (Typeable field, Typeable flattened)
   => object
   -> Context
   -> String
@@ -1761,7 +1774,7 @@ flattenListField object context field accessor flattener = do
   case accessor object of
     Nothing -> throwError $ "Field \"" ++ field ++ "\" undefined."
     Just value -> do
-      values <- evaluate context value
+      values <- evaluate context value (undefined :: flattened)
       mapM (flattener context) values
 
 
