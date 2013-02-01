@@ -234,68 +234,69 @@ flattenEntitySpecification
   -> EntitySpecification
   -> Compilation EntitySpecificationFlattened
 flattenEntitySpecification
-    allFlags templates allColumnFlags columnTemplates entity = do
-  let getRelevantTemplates entity = do
-        case entitySpecificationTemplate entity of
-          Nothing -> return [entity]
-          Just templateName ->
-            case Map.lookup templateName templates of
-              Nothing -> return [entity]
-              Just template -> do
-                rest <- getRelevantTemplates template
-                return $ entity : rest
-  relevantTemplates <- getRelevantTemplates entity >>= return . reverse
-  let flattened = mconcat relevantTemplates
-      flatten
-        :: (Typeable item, Typeable result)
-        => String
-        -> (EntitySpecification -> Maybe Expression)
-        -> (Context -> item -> Compilation result)
-        -> Compilation result
-      flatten = flattenField flattened emptyContext
-      flattenList
-        :: (Typeable item, Typeable result)
-        => String
-        -> (EntitySpecification -> Maybe Expression)
-        -> (Context -> item -> Compilation result)
-        -> Compilation [result]
-      flattenList = flattenListField flattened emptyContext
-  flags <- maybe (throwError "\"Flags\" field undefined.")
-                 return
-                 (entitySpecificationFlags flattened)
-  let presentFlags = Set.fromList $ map fst $ Map.toList flags
-      unknownFlags = Set.difference presentFlags allFlags
-  if not $ Set.null unknownFlags
-    then throwError $ "Unknown flags "
-                      ++ (intercalate ", " $ map show
-                           $ Set.toList unknownFlags)
-                      ++ "."
-    else return ()
-  let missingFlags = Set.difference allFlags presentFlags 
-  if not $ Set.null missingFlags
-    then throwError $ "Missing flags "
-                      ++ (intercalate ", " $ map show
-                           $ Set.toList missingFlags)
-                      ++ "."
-    else return ()
-  tables <- flattenList "tables" entitySpecificationTables
-              (\context value -> return value)
-  if null tables
-    then throwError "Entity has no tables."
-    else return ()
-  key <- flattenList "key" entitySpecificationKey
-           (flattenKeyColumnSpecification allColumnFlags columnTemplates)
-  columns <- flattenList "columns" entitySpecificationColumns
-               (flattenColumnSpecification allColumnFlags columnTemplates)
-  relations <- flattenList "relations" entitySpecificationRelations
-                 (\context value -> return value)
-  return $ EntitySpecificationFlattened {
-               entitySpecificationFlattenedFlags = flags,
-               entitySpecificationFlattenedTables = tables,
-               entitySpecificationFlattenedKey = key,
-               entitySpecificationFlattenedColumns = columns,
-               entitySpecificationFlattenedRelations = relations
-            }
+    allFlags templates allColumnFlags columnTemplates entity =
+  tagErrors "Flattening entity specification" $ do
+    let getRelevantTemplates entity = do
+          case entitySpecificationTemplate entity of
+            Nothing -> return [entity]
+            Just templateName ->
+              case Map.lookup templateName templates of
+                Nothing -> return [entity]
+                Just template -> do
+                  rest <- getRelevantTemplates template
+                  return $ entity : rest
+    relevantTemplates <- getRelevantTemplates entity >>= return . reverse
+    let flattened = mconcat relevantTemplates
+        flatten
+          :: (Typeable item, Typeable result)
+          => String
+          -> (EntitySpecification -> Maybe Expression)
+          -> (Context -> item -> Compilation result)
+          -> Compilation result
+        flatten = flattenField flattened emptyContext
+        flattenList
+          :: (Typeable item, Typeable result)
+          => String
+          -> (EntitySpecification -> Maybe Expression)
+          -> (Context -> item -> Compilation result)
+          -> Compilation [result]
+        flattenList = flattenListField flattened emptyContext
+    flags <- maybe (throwError "\"Flags\" field undefined.")
+                   return
+                   (entitySpecificationFlags flattened)
+    let presentFlags = Set.fromList $ map fst $ Map.toList flags
+        unknownFlags = Set.difference presentFlags allFlags
+    if not $ Set.null unknownFlags
+      then throwError $ "Unknown flags "
+                        ++ (intercalate ", " $ map show
+                             $ Set.toList unknownFlags)
+                        ++ "."
+      else return ()
+    let missingFlags = Set.difference allFlags presentFlags 
+    if not $ Set.null missingFlags
+      then throwError $ "Missing flags "
+                        ++ (intercalate ", " $ map show
+                             $ Set.toList missingFlags)
+                        ++ "."
+      else return ()
+    tables <- flattenList "tables" entitySpecificationTables
+                (\context value -> return value)
+    if null tables
+      then throwError "Entity has no tables."
+      else return ()
+    key <- flattenList "key" entitySpecificationKey
+             (flattenKeyColumnSpecification allColumnFlags columnTemplates)
+    columns <- flattenList "columns" entitySpecificationColumns
+                 (flattenColumnSpecification allColumnFlags columnTemplates)
+    relations <- flattenList "relations" entitySpecificationRelations
+                   (\context value -> return value)
+    return $ EntitySpecificationFlattened {
+                 entitySpecificationFlattenedFlags = flags,
+                 entitySpecificationFlattenedTables = tables,
+                 entitySpecificationFlattenedKey = key,
+                 entitySpecificationFlattenedColumns = columns,
+                 entitySpecificationFlattenedRelations = relations
+              }
 
 
 data ColumnSpecification =
@@ -458,75 +459,77 @@ flattenKeyColumnSpecification
   -> Context
   -> ColumnSpecification
   -> Compilation KeyColumnSpecificationFlattened
-flattenKeyColumnSpecification allFlags templates entityContext column = do
-  let getRelevantTemplates column = do
-        case columnSpecificationTemplate column of
-          Nothing -> return [column]
-          Just templateNameExpression -> do
-            templateName <- evaluate entityContext templateNameExpression
-                                     (undefined :: String)
-            case Map.lookup templateName templates of
-              Nothing -> return [column]
-              Just template -> do
-                rest <- getRelevantTemplates template
-                return $ column : rest
-  relevantTemplates <- getRelevantTemplates column >>= return . reverse
-  let flattened = mconcat relevantTemplates
-      flatten
-        :: (Typeable item, Typeable result)
-        => String
-        -> (ColumnSpecification -> Maybe Expression)
-        -> (Context -> item -> Compilation result)
-        -> Compilation result
-      flatten = flattenField flattened entityContext
-      flattenList
-        :: (Typeable item, Typeable result)
-        => String
-        -> (ColumnSpecification -> Maybe Expression)
-        -> (Context -> item -> Compilation result)
-        -> Compilation [result]
-      flattenList = flattenListField flattened entityContext
-  name <- flatten "name" columnSpecificationName flattenNameSpecification
-  type' <- flatten "type" columnSpecificationType
-                   flattenTypeReferenceSpecification
-  flags <- maybe (throwError "\"Flags\" field undefined.")
-                 return
-                 (columnSpecificationFlags flattened)
-  let presentFlags = Set.fromList $ map fst $ Map.toList flags
-      unknownFlags = Set.difference presentFlags allFlags
-  if not $ Set.null unknownFlags
-    then throwError $ "Unknown flags "
-                      ++ (intercalate ", " $ map show
-                           $ Set.toList unknownFlags)
-                      ++ "."
-    else return ()
-  let missingFlags = Set.difference allFlags presentFlags 
-  if not $ Set.null missingFlags
-    then throwError $ "Missing flags "
-                      ++ (intercalate ", " $ map show
-                           $ Set.toList missingFlags)
-                      ++ "."
-    else return ()
-  tableRoles <- flattenList "table_roles" columnSpecificationTableRoles
-                            (\context value -> return value)
-                >>= return . Set.fromList
-  if Set.null tableRoles
-    then throwError "Column has no table roles."
-    else return ()
-  columnRole <- flatten "column_role" columnSpecificationColumnRole
-                        (\context value -> return value)
-  case columnSpecificationReadOnly flattened of
-    Nothing -> return ()
-    Just _ -> throwError "\"Read-only\" field defined on a key column."
-  case columnSpecificationConcretePathOf flattened of
-    Nothing -> return ()
-    Just _ -> throwError "\"Concrete-path-of\" field defined on a key column."
-  return $ KeyColumnSpecificationFlattened {
-               keyColumnSpecificationFlattenedName = name,
-               keyColumnSpecificationFlattenedType = type',
-               keyColumnSpecificationFlattenedTableRoles = tableRoles,
-               keyColumnSpecificationFlattenedColumnRole = columnRole
-             }
+flattenKeyColumnSpecification allFlags templates entityContext column =
+  tagErrors "Flattening key-column specification" $ do
+    let getRelevantTemplates column = do
+          case columnSpecificationTemplate column of
+            Nothing -> return [column]
+            Just templateNameExpression -> do
+              templateName <- evaluate entityContext templateNameExpression
+                                       (undefined :: String)
+              case Map.lookup templateName templates of
+                Nothing -> return [column]
+                Just template -> do
+                  rest <- getRelevantTemplates template
+                  return $ column : rest
+    relevantTemplates <- getRelevantTemplates column >>= return . reverse
+    let flattened = mconcat relevantTemplates
+        flatten
+          :: (Typeable item, Typeable result)
+          => String
+          -> (ColumnSpecification -> Maybe Expression)
+          -> (Context -> item -> Compilation result)
+          -> Compilation result
+        flatten = flattenField flattened entityContext
+        flattenList
+          :: (Typeable item, Typeable result)
+          => String
+          -> (ColumnSpecification -> Maybe Expression)
+          -> (Context -> item -> Compilation result)
+          -> Compilation [result]
+        flattenList = flattenListField flattened entityContext
+    name <- flatten "name" columnSpecificationName flattenNameSpecification
+    type' <- flatten "type" columnSpecificationType
+                     flattenTypeReferenceSpecification
+    flags <- maybe (throwError "\"Flags\" field undefined.")
+                   return
+                   (columnSpecificationFlags flattened)
+    let presentFlags = Set.fromList $ map fst $ Map.toList flags
+        unknownFlags = Set.difference presentFlags allFlags
+    if not $ Set.null unknownFlags
+      then throwError $ "Unknown flags "
+                        ++ (intercalate ", " $ map show
+                             $ Set.toList unknownFlags)
+                        ++ "."
+      else return ()
+    let missingFlags = Set.difference allFlags presentFlags 
+    if not $ Set.null missingFlags
+      then throwError $ "Missing flags "
+                        ++ (intercalate ", " $ map show
+                             $ Set.toList missingFlags)
+                        ++ "."
+      else return ()
+    tableRoles <- flattenList "table_roles" columnSpecificationTableRoles
+                              (\context value -> return value)
+                  >>= return . Set.fromList
+    if Set.null tableRoles
+      then throwError "Column has no table roles."
+      else return ()
+    columnRole <- flatten "column_role" columnSpecificationColumnRole
+                          (\context value -> return value)
+    case columnSpecificationReadOnly flattened of
+      Nothing -> return ()
+      Just _ -> throwError "\"Read-only\" field defined on a key column."
+    case columnSpecificationConcretePathOf flattened of
+      Nothing -> return ()
+      Just _ ->
+        throwError "\"Concrete-path-of\" field defined on a key column."
+    return $ KeyColumnSpecificationFlattened {
+                 keyColumnSpecificationFlattenedName = name,
+                 keyColumnSpecificationFlattenedType = type',
+                 keyColumnSpecificationFlattenedTableRoles = tableRoles,
+                 keyColumnSpecificationFlattenedColumnRole = columnRole
+               }
 
 
 data ColumnSpecificationFlattened =
@@ -559,80 +562,82 @@ flattenColumnSpecification
   -> Context
   -> ColumnSpecification
   -> Compilation ColumnSpecificationFlattened
-flattenColumnSpecification allFlags templates entityContext column = do
-  let getRelevantTemplates column = do
-        case columnSpecificationTemplate column of
-          Nothing -> return [column]
-          Just templateNameExpression -> do
-            templateName <- evaluate entityContext templateNameExpression
-                                     (undefined :: String)
-            case Map.lookup templateName templates of
-              Nothing -> return [column]
-              Just template -> do
-                rest <- getRelevantTemplates template
-                return $ column : rest
-  relevantTemplates <- getRelevantTemplates column >>= return . reverse
-  let flattened = mconcat relevantTemplates
-      flatten
-        :: (Typeable item, Typeable result)
-        => String
-        -> (ColumnSpecification -> Maybe Expression)
-        -> (Context -> item -> Compilation result)
-        -> Compilation result
-      flatten = flattenField flattened entityContext
-      flattenList
-        :: (Typeable item, Typeable result)
-        => String
-        -> (ColumnSpecification -> Maybe Expression)
-        -> (Context -> item -> Compilation result)
-        -> Compilation [result]
-      flattenList = flattenListField flattened entityContext
-  name <- flatten "name" columnSpecificationName flattenNameSpecification
-  type' <- flatten "type" columnSpecificationType
-                   flattenTypeReferenceSpecification
-  flags <- maybe (throwError "\"Flags\" field undefined.")
-                 return
-                 (columnSpecificationFlags flattened)
-  let presentFlags = Set.fromList $ map fst $ Map.toList flags
-      unknownFlags = Set.difference presentFlags allFlags
-  if not $ Set.null unknownFlags
-    then throwError $ "Unknown flags "
-                      ++ (intercalate ", " $ map show
-                           $ Set.toList unknownFlags)
-                      ++ "."
-    else return ()
-  let missingFlags = Set.difference allFlags presentFlags 
-  if not $ Set.null missingFlags
-    then throwError $ "Missing flags "
-                      ++ (intercalate ", " $ map show
-                           $ Set.toList missingFlags)
-                      ++ "."
-    else return ()
-  tableRoles <- flattenList "table_roles" columnSpecificationTableRoles
-                            (\context value -> return value)
-                >>= return . Set.fromList
-  if Set.null tableRoles
-    then throwError "Column has no table roles."
-    else return ()
-  columnRole <- flatten "column_role" columnSpecificationColumnRole
+flattenColumnSpecification allFlags templates entityContext column =
+  tagErrors "Flattening column specification" $ do
+    let getRelevantTemplates column = do
+          case columnSpecificationTemplate column of
+            Nothing -> return [column]
+            Just templateNameExpression -> do
+              templateName <- evaluate entityContext templateNameExpression
+                                       (undefined :: String)
+              case Map.lookup templateName templates of
+                Nothing -> return [column]
+                Just template -> do
+                  rest <- getRelevantTemplates template
+                  return $ column : rest
+    relevantTemplates <- getRelevantTemplates column >>= return . reverse
+    let flattened = mconcat relevantTemplates
+        flatten
+          :: (Typeable item, Typeable result)
+          => String
+          -> (ColumnSpecification -> Maybe Expression)
+          -> (Context -> item -> Compilation result)
+          -> Compilation result
+        flatten = flattenField flattened entityContext
+        flattenList
+          :: (Typeable item, Typeable result)
+          => String
+          -> (ColumnSpecification -> Maybe Expression)
+          -> (Context -> item -> Compilation result)
+          -> Compilation [result]
+        flattenList = flattenListField flattened entityContext
+    name <- flatten "name" columnSpecificationName flattenNameSpecification
+    type' <- flatten "type" columnSpecificationType
+                     flattenTypeReferenceSpecification
+    flags <- maybe (throwError "\"Flags\" field undefined.")
+                   return
+                   (columnSpecificationFlags flattened)
+    let presentFlags = Set.fromList $ map fst $ Map.toList flags
+        unknownFlags = Set.difference presentFlags allFlags
+    if not $ Set.null unknownFlags
+      then throwError $ "Unknown flags "
+                        ++ (intercalate ", " $ map show
+                             $ Set.toList unknownFlags)
+                        ++ "."
+      else return ()
+    let missingFlags = Set.difference allFlags presentFlags 
+    if not $ Set.null missingFlags
+      then throwError $ "Missing flags "
+                        ++ (intercalate ", " $ map show
+                             $ Set.toList missingFlags)
+                        ++ "."
+      else return ()
+    tableRoles <- flattenList "table_roles" columnSpecificationTableRoles
+                              (\context value -> return value)
+                  >>= return . Set.fromList
+    if Set.null tableRoles
+      then throwError "Column has no table roles."
+      else return ()
+    columnRole <- flatten "column_role" columnSpecificationColumnRole
+                          (\context value -> return value)
+    readOnly <- flatten "read_only" columnSpecificationReadOnly
                         (\context value -> return value)
-  readOnly <- flatten "read_only" columnSpecificationReadOnly
-                      (\context value -> return value)
-  concretePathOf <-
-    case columnSpecificationConcretePathOf flattened of
-      Nothing -> return Nothing
-      Just value -> do
-        value <- evaluate entityContext value (undefined :: NameSpecification)
-        value <- flattenNameSpecification entityContext value
-        return $ Just value
-  return $ ColumnSpecificationFlattened {
-               columnSpecificationFlattenedName = name,
-               columnSpecificationFlattenedType = type',
-               columnSpecificationFlattenedTableRoles = tableRoles,
-               columnSpecificationFlattenedColumnRole = columnRole,
-               columnSpecificationFlattenedReadOnly = readOnly,
-               columnSpecificationFlattenedConcretePathOf = concretePathOf
-             }
+    concretePathOf <-
+      case columnSpecificationConcretePathOf flattened of
+        Nothing -> return Nothing
+        Just value -> do
+          value <- evaluate entityContext value
+                            (undefined :: NameSpecification)
+          value <- flattenNameSpecification entityContext value
+          return $ Just value
+    return $ ColumnSpecificationFlattened {
+                 columnSpecificationFlattenedName = name,
+                 columnSpecificationFlattenedType = type',
+                 columnSpecificationFlattenedTableRoles = tableRoles,
+                 columnSpecificationFlattenedColumnRole = columnRole,
+                 columnSpecificationFlattenedReadOnly = readOnly,
+                 columnSpecificationFlattenedConcretePathOf = concretePathOf
+               }
 
 
 data ColumnRoleSpecification =
@@ -712,31 +717,32 @@ flattenRelationSpecification
   :: Context
   -> RelationSpecification
   -> Compilation RelationSpecificationFlattened
-flattenRelationSpecification entityContext relation = do
-  entity <- evaluate entityContext (relationSpecificationEntity relation)
-                     (undefined :: String)
-  purpose <-
-    case relationSpecificationPurpose relation of
-      Nothing -> return Nothing
-      Just purpose -> evaluate entityContext purpose (undefined :: String)
-                      >>= return . Just
-  required <- evaluate entityContext (relationSpecificationRequired relation)
+flattenRelationSpecification entityContext relation =
+  tagErrors "Flattening relation specification" $ do
+    entity <- evaluate entityContext (relationSpecificationEntity relation)
+                       (undefined :: String)
+    purpose <-
+      case relationSpecificationPurpose relation of
+        Nothing -> return Nothing
+        Just purpose -> evaluate entityContext purpose (undefined :: String)
+                        >>= return . Just
+    required <- evaluate entityContext (relationSpecificationRequired relation)
+                         (undefined :: Bool)
+    unique <- evaluate entityContext (relationSpecificationUnique relation)
                        (undefined :: Bool)
-  unique <- evaluate entityContext (relationSpecificationUnique relation)
-                     (undefined :: Bool)
-  key <-
-    case relationSpecificationKey relation of
-      Nothing -> return Nothing
-      Just key -> evaluate entityContext key (undefined :: NameSpecification)
-                  >>= mapM (flattenNameSpecification entityContext)
-                  >>= return . Just
-  return $ RelationSpecificationFlattened {
-               relationSpecificationFlattenedEntity = entity,
-               relationSpecificationFlattenedPurpose = purpose,
-               relationSpecificationFlattenedRequired = required,
-               relationSpecificationFlattenedUnique = unique,
-               relationSpecificationFlattenedKey = key
-             }
+    key <-
+      case relationSpecificationKey relation of
+        Nothing -> return Nothing
+        Just key -> evaluate entityContext key (undefined :: NameSpecification)
+                    >>= mapM (flattenNameSpecification entityContext)
+                    >>= return . Just
+    return $ RelationSpecificationFlattened {
+                 relationSpecificationFlattenedEntity = entity,
+                 relationSpecificationFlattenedPurpose = purpose,
+                 relationSpecificationFlattenedRequired = required,
+                 relationSpecificationFlattenedUnique = unique,
+                 relationSpecificationFlattenedKey = key
+               }
 
 
 data NameSpecification =
@@ -864,12 +870,13 @@ flattenTypeReferenceSpecification
   -> TypeReferenceSpecification
   -> Compilation TypeReferenceSpecificationFlattened
 flattenTypeReferenceSpecification
-    context (TypeReferenceSpecification constructor parameters) = do
-  constructor <- evaluate context constructor (undefined :: String)
-  parameters <- evaluate context parameters
-                         (undefined :: TypeReferenceSpecification)
-  parameters <- mapM (flattenTypeReferenceSpecification context) parameters
-  return $ TypeReferenceSpecificationFlattened constructor parameters
+    context (TypeReferenceSpecification constructor parameters) =
+  tagErrors "Flattening type-reference specification" $ do
+    constructor <- evaluate context constructor (undefined :: String)
+    parameters <- evaluate context parameters
+                           (undefined :: TypeReferenceSpecification)
+    parameters <- mapM (flattenTypeReferenceSpecification context) parameters
+    return $ TypeReferenceSpecificationFlattened constructor parameters
 
 
 data TypeSpecification =
@@ -912,29 +919,30 @@ flattenTypeSpecification
   :: Context
   -> TypeSpecification
   -> Compilation TypeSpecificationFlattened
-flattenTypeSpecification context specification = do
-  let flatten
-        :: (Typeable item, Typeable result)
-        => String
-        -> (TypeSpecification -> Maybe Expression)
-        -> (Context -> item -> Compilation result)
-        -> Compilation result
-      flatten = flattenField specification context
-      flattenList
-        :: (Typeable item, Typeable result)
-        => String
-        -> (TypeSpecification -> Maybe Expression)
-        -> (Context -> item -> Compilation result)
-        -> Compilation [result]
-      flattenList = flattenListField specification context
-  parameters <- flatten "parameters" typeSpecificationParameters
-                         (\context value -> return value)
-  subcolumns <- flattenList "subcolumns" typeSpecificationSubcolumns
-                            flattenSubcolumnSpecification
-  return $ TypeSpecificationFlattened {
-               typeSpecificationFlattenedParameters = parameters,
-               typeSpecificationFlattenedSubcolumns = subcolumns
-             }
+flattenTypeSpecification context specification =
+  tagErrors "Flattening type specification" $ do
+    let flatten
+          :: (Typeable item, Typeable result)
+          => String
+          -> (TypeSpecification -> Maybe Expression)
+          -> (Context -> item -> Compilation result)
+          -> Compilation result
+        flatten = flattenField specification context
+        flattenList
+          :: (Typeable item, Typeable result)
+          => String
+          -> (TypeSpecification -> Maybe Expression)
+          -> (Context -> item -> Compilation result)
+          -> Compilation [result]
+        flattenList = flattenListField specification context
+    parameters <- flatten "parameters" typeSpecificationParameters
+                           (\context value -> return value)
+    subcolumns <- flattenList "subcolumns" typeSpecificationSubcolumns
+                              flattenSubcolumnSpecification
+    return $ TypeSpecificationFlattened {
+                 typeSpecificationFlattenedParameters = parameters,
+                 typeSpecificationFlattenedSubcolumns = subcolumns
+               }
 
 
 data SubcolumnSpecification =
@@ -977,21 +985,22 @@ flattenSubcolumnSpecification
   :: Context
   -> SubcolumnSpecification
   -> Compilation SubcolumnSpecificationFlattened
-flattenSubcolumnSpecification context specification = do
-  let flatten
-        :: (Typeable item, Typeable result)
-        => String
-        -> (SubcolumnSpecification -> Maybe Expression)
-        -> (Context -> item -> Compilation result)
-        -> Compilation result
-      flatten = flattenField specification context
-  name <- flatten "name" subcolumnSpecificationName flattenNameSpecification
-  type' <- flatten "type" subcolumnSpecificationType
-                   (\context value -> return value)
-  return $ SubcolumnSpecificationFlattened {
-               subcolumnSpecificationFlattenedName = name,
-               subcolumnSpecificationFlattenedType = type'
-             }
+flattenSubcolumnSpecification context specification =
+  tagErrors "Flattening subcolumn specification" $ do
+    let flatten
+          :: (Typeable item, Typeable result)
+          => String
+          -> (SubcolumnSpecification -> Maybe Expression)
+          -> (Context -> item -> Compilation result)
+          -> Compilation result
+        flatten = flattenField specification context
+    name <- flatten "name" subcolumnSpecificationName flattenNameSpecification
+    type' <- flatten "type" subcolumnSpecificationType
+                     (\context value -> return value)
+    return $ SubcolumnSpecificationFlattened {
+                 subcolumnSpecificationFlattenedName = name,
+                 subcolumnSpecificationFlattenedType = type'
+               }
 
 
 data Context =
@@ -1710,9 +1719,10 @@ flattenNameSpecification
   :: Context
   -> NameSpecification
   -> Compilation NameSpecificationFlattened
-flattenNameSpecification context (NameSpecification parts) = do
-  evaluate context parts (undefined :: NameSpecificationPart)
-  >>= return . NameSpecificationFlattened
+flattenNameSpecification context (NameSpecification parts) =
+  tagErrors "Flattening name specification" $ do
+    evaluate context parts (undefined :: NameSpecificationPart)
+    >>= return . NameSpecificationFlattened
 
 
 finalizeNameSpecification
@@ -1755,11 +1765,12 @@ flattenField
   -> (Context -> field -> Compilation flattened)
   -> Compilation flattened
 flattenField object context field accessor flattener = do
-  case accessor object of
-    Nothing -> throwError $ "Field \"" ++ field ++ "\" undefined."
-    Just value -> do
-      value <- evaluate context value (undefined :: flattened)
-      flattener context value
+  tagErrors ("Flattening field \"" ++ field ++ "\"") $ do
+    case accessor object of
+      Nothing -> throwError $ "Field \"" ++ field ++ "\" undefined."
+      Just value -> do
+        value <- evaluate context value (undefined :: flattened)
+        flattener context value
 
 
 flattenListField
@@ -1771,11 +1782,12 @@ flattenListField
   -> (Context -> field -> Compilation flattened)
   -> Compilation [flattened]
 flattenListField object context field accessor flattener = do
-  case accessor object of
-    Nothing -> throwError $ "Field \"" ++ field ++ "\" undefined."
-    Just value -> do
-      values <- evaluate context value (undefined :: flattened)
-      mapM (flattener context) values
+  tagErrors ("Flattening list field \"" ++ field ++ "\"") $ do
+    case accessor object of
+      Nothing -> throwError $ "Field \"" ++ field ++ "\" undefined."
+      Just value -> do
+        values <- evaluate context value (undefined :: flattened)
+        mapM (flattener context) values
 
 
 compileTable
